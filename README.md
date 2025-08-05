@@ -21,8 +21,8 @@ A secure and scalable FastAPI backend for the HAVEN crowdfunding platform with O
 - **Database**: PostgreSQL with SQLAlchemy 2.0
 - **Authentication**: JWT with OAuth2 (Google, Facebook)
 - **Caching**: Redis for session and data caching
-- **ML Services**: Scikit-learn for fraud detection
-- **Translation**: Google Translate API
+- **ML Services**: DistillBERT for fraud detection
+- **Translation**: IndicTrans@ trained under IndiCorp dataset
 - **File Storage**: Local filesystem with cloud storage support
 - **Deployment**: Docker with cloud platform support
 
