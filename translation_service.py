@@ -1,507 +1,601 @@
 """
-Optimized Translation Service for HAVEN Crowdfunding Platform
-Fixed version with proper caching, fallback mechanisms, and model optimization
+Translation Service using IndicTrans2 trained on IndicCorp dataset
+Supports only 4 languages: English, Tamil, Hindi, Telugu
 """
 
 import os
-import json
 import logging
-import hashlib
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
-from pathlib import Path
 import asyncio
-
-from config import get_settings
+import hashlib
+import json
+from typing import Dict, List, Optional, Tuple, Any
+from datetime import datetime, timedelta
+import torch
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSeq2SeqLM,
+    pipeline
+)
+import redis
+from config import settings
+import time
 
 logger = logging.getLogger(__name__)
-settings = get_settings()
 
-@dataclass
-class TranslationResult:
-    """Translation result with metadata"""
-    translated_text: str
-    source_language: str
-    target_language: str
-    confidence_score: float
-    method: str  # 'model', 'cache', 'api', 'fallback'
-    processing_time: float
 
-class OptimizedTranslationService:
+class IndicTrans2Service:
     """
-    Optimized translation service with multiple backends and caching
+    Translation service using IndicTrans2 trained on IndicCorp dataset
+    Supports: English (en), Tamil (ta), Hindi (hi), Telugu (te)
     """
-    
+
     def __init__(self):
-        self.cache_dir = Path(settings.model_cache_dir) / "translations"
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Translation backends
-        self.model_backend = None
-        self.api_backend = None
-        
-        # Cache management
-        self.memory_cache = {}
-        self.cache_ttl = 86400  # 24 hours
-        self.max_cache_size = 10000
-        
-        # Supported languages
+        self.device = torch.device(settings.torch_device)
+        self.use_quantization = settings.use_quantization
+        self.cache_ttl = settings.translation_cache_ttl
+        self.max_text_length = settings.translation_max_text_length
+        self.batch_size = settings.translation_batch_size
+
+        # Initialize models
+        self.en_to_indic_model = None
+        self.en_to_indic_tokenizer = None
+        self.indic_to_en_model = None
+        self.indic_to_en_tokenizer = None
+
+        # Supported languages (limited to 4 as requested)
         self.supported_languages = {
             'en': 'English',
             'hi': 'Hindi',
-            'bn': 'Bengali',
-            'te': 'Telugu',
-            'mr': 'Marathi',
             'ta': 'Tamil',
-            'gu': 'Gujarati',
-            'kn': 'Kannada',
-            'ml': 'Malayalam',
-            'pa': 'Punjabi',
-            'or': 'Odia',
-            'as': 'Assamese'
+            'te': 'Telugu'
         }
-        
-        # Initialize backends
-        self._initialize_backends()
-    
-    def _initialize_backends(self):
-        """Initialize translation backends"""
-        try:
-            # Try to initialize model backend (optional)
-            if settings.enable_translation:
-                self._initialize_model_backend()
-            
-            # Initialize API backend (fallback)
-            self._initialize_api_backend()
-            
-            logger.info("✅ Translation service initialized")
-            
-        except Exception as e:
-            logger.error(f"❌ Translation service initialization failed: {e}")
-            # Create minimal fallback service
-            self._create_fallback_service()
-    
-    def _initialize_model_backend(self):
-        """Initialize local model backend (optional)"""
-        try:
-            # Use a lightweight translation model instead of M2M100
-            from transformers import pipeline
-            
-            # Use a smaller, faster model
-            model_name = "Helsinki-NLP/opus-mt-en-hi"  # English to Hindi
-            
-            # Check if model is cached
-            model_cache_path = self.cache_dir / "translation_model"
-            
-            if model_cache_path.exists():
-                logger.info("📦 Loading cached translation model")
-                self.model_backend = pipeline(
-                    "translation",
-                    model=str(model_cache_path),
-                    device=-1  # Use CPU
-                )
-            else:
-                logger.info("⬇️ Downloading translation model (one-time setup)")
-                self.model_backend = pipeline(
-                    "translation",
-                    model=model_name,
-                    device=-1  # Use CPU
-                )
-                # Cache the model
-                self.model_backend.save_pretrained(str(model_cache_path))
-            
-            logger.info("✅ Model backend initialized")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Model backend initialization failed: {e}")
-            self.model_backend = None
-    
-    def _initialize_api_backend(self):
-        """Initialize API backend for translation"""
-        try:
-            # Use Google Translate API as fallback
-            google_api_key = os.getenv("GOOGLE_TRANSLATE_API_KEY")
-            
-            if google_api_key:
-                from googletrans import Translator
-                self.api_backend = Translator()
-                logger.info("✅ Google Translate API backend initialized")
-            else:
-                logger.warning("⚠️ Google Translate API key not found")
-                self.api_backend = None
-                
-        except ImportError:
-            logger.warning("⚠️ googletrans library not available")
-            self.api_backend = None
-        except Exception as e:
-            logger.warning(f"⚠️ API backend initialization failed: {e}")
-            self.api_backend = None
-    
-    def _create_fallback_service(self):
-        """Create minimal fallback translation service"""
-        logger.warning("⚠️ Creating fallback translation service")
-        
-        # Simple dictionary-based translations for common phrases
-        self.fallback_translations = {
-            ('en', 'hi'): {
-                'hello': 'नमस्ते',
-                'thank you': 'धन्यवाद',
-                'welcome': 'स्वागत है',
-                'donate': 'दान करें',
-                'campaign': 'अभियान',
-                'help': 'मदद',
-                'support': 'समर्थन'
-            },
-            ('hi', 'en'): {
-                'नमस्ते': 'hello',
-                'धन्यवाद': 'thank you',
-                'स्वागत है': 'welcome',
-                'दान करें': 'donate',
-                'अभियान': 'campaign',
-                'मदद': 'help',
-                'समर्थन': 'support'
-            }
+
+        # IndicTrans2 language codes for IndicCorp dataset
+        self.indic_lang_codes = {
+            'hi': 'hin_Deva',  # Hindi
+            'ta': 'tam_Taml',  # Tamil
+            'te': 'tel_Telu',  # Telugu
+            'en': 'eng_Latn'  # English
         }
-    
+
+        # Initialize cache
+        self.cache = self._init_cache()
+
+        # Initialize models asynchronously
+        asyncio.create_task(self._initialize_models())
+
+    def _init_cache(self) -> Optional[redis.Redis]:
+        """Initialize Redis cache if available"""
+        try:
+            if hasattr(settings, 'redis_url') and settings.redis_url:
+                return redis.from_url(settings.redis_url, decode_responses=True)
+            return None
+        except Exception as e:
+            logger.warning(f"Redis cache not available: {e}")
+            return None
+
+    async def _initialize_models(self):
+        """Initialize IndicTrans2 models"""
+        try:
+            logger.info("Initializing IndicTrans2 models trained on IndicCorp dataset...")
+
+            # Load English to Indic model
+            await self._load_en_to_indic_model()
+
+            # Load Indic to English model
+            await self._load_indic_to_en_model()
+
+            logger.info("IndicTrans2 models initialized successfully")
+
+        except Exception as e:
+            logger.error(f"Error initializing IndicTrans2 models: {e}")
+
+    async def _load_en_to_indic_model(self):
+        """Load English to Indic IndicTrans2 model"""
+        try:
+            model_name = "ai4bharat/indictrans2-en-indic-1B"
+
+            logger.info(f"Loading English to Indic model: {model_name}")
+
+            self.en_to_indic_tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
+
+            self.en_to_indic_model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if self.use_quantization else torch.float32
+            )
+
+            if self.use_quantization and torch.cuda.is_available():
+                self.en_to_indic_model = self.en_to_indic_model.half()
+
+            self.en_to_indic_model.to(self.device)
+            self.en_to_indic_model.eval()
+
+            logger.info("English to Indic model loaded successfully")
+
+        except Exception as e:
+            logger.error(f"Error loading English to Indic model: {e}")
+            self.en_to_indic_model = None
+            self.en_to_indic_tokenizer = None
+
+    async def _load_indic_to_en_model(self):
+        """Load Indic to English IndicTrans2 model"""
+        try:
+            model_name = "ai4bharat/indictrans2-indic-en-1B"
+
+            logger.info(f"Loading Indic to English model: {model_name}")
+
+            self.indic_to_en_tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True
+            )
+
+            self.indic_to_en_model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                torch_dtype=torch.float16 if self.use_quantization else torch.float32
+            )
+
+            if self.use_quantization and torch.cuda.is_available():
+                self.indic_to_en_model = self.indic_to_en_model.half()
+
+            self.indic_to_en_model.to(self.device)
+            self.indic_to_en_model.eval()
+
+            logger.info("Indic to English model loaded successfully")
+
+        except Exception as e:
+            logger.error(f"Error loading Indic to English model: {e}")
+            self.indic_to_en_model = None
+            self.indic_to_en_tokenizer = None
+
     def _get_cache_key(self, text: str, source_lang: str, target_lang: str) -> str:
         """Generate cache key for translation"""
-        content = f"{text}|{source_lang}|{target_lang}"
-        return hashlib.md5(content.encode()).hexdigest()
-    
-    def _get_from_cache(self, cache_key: str) -> Optional[TranslationResult]:
-        """Get translation from cache"""
-        # Check memory cache first
-        if cache_key in self.memory_cache:
-            cached_item = self.memory_cache[cache_key]
-            if datetime.now().timestamp() - cached_item['timestamp'] < self.cache_ttl:
-                return cached_item['result']
-            else:
-                # Remove expired item
-                del self.memory_cache[cache_key]
-        
-        # Check file cache
-        cache_file = self.cache_dir / f"{cache_key}.json"
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    cached_data = json.load(f)
-                
-                # Check if cache is still valid
-                cached_time = datetime.fromisoformat(cached_data['timestamp'])
-                if datetime.now() - cached_time < timedelta(seconds=self.cache_ttl):
-                    result = TranslationResult(**cached_data['result'])
-                    
-                    # Add to memory cache
-                    self.memory_cache[cache_key] = {
-                        'result': result,
-                        'timestamp': datetime.now().timestamp()
-                    }
-                    
-                    return result
+        content = f"{text}:{source_lang}:{target_lang}"
+        return f"indictrans2:{hashlib.md5(content.encode()).hexdigest()}"
+
+    def _get_cached_translation(self, cache_key: str) -> Optional[str]:
+        """Get cached translation"""
+        if not self.cache:
+            return None
+
+        try:
+            cached = self.cache.get(cache_key)
+            if cached:
+                data = json.loads(cached)
+                if datetime.fromisoformat(data['expires']) > datetime.now():
+                    return data['translation']
                 else:
-                    # Remove expired cache file
-                    cache_file.unlink()
-                    
-            except Exception as e:
-                logger.warning(f"Failed to read cache file: {e}")
-        
-        return None
-    
-    def _save_to_cache(self, cache_key: str, result: TranslationResult):
-        """Save translation to cache"""
-        try:
-            # Save to memory cache
-            self.memory_cache[cache_key] = {
-                'result': result,
-                'timestamp': datetime.now().timestamp()
-            }
-            
-            # Limit memory cache size
-            if len(self.memory_cache) > self.max_cache_size:
-                # Remove oldest entries
-                sorted_items = sorted(
-                    self.memory_cache.items(),
-                    key=lambda x: x[1]['timestamp']
-                )
-                for key, _ in sorted_items[:len(self.memory_cache) - self.max_cache_size]:
-                    del self.memory_cache[key]
-            
-            # Save to file cache
-            cache_file = self.cache_dir / f"{cache_key}.json"
-            cache_data = {
-                'result': {
-                    'translated_text': result.translated_text,
-                    'source_language': result.source_language,
-                    'target_language': result.target_language,
-                    'confidence_score': result.confidence_score,
-                    'method': result.method,
-                    'processing_time': result.processing_time
-                },
-                'timestamp': datetime.now().isoformat()
-            }
-            
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(cache_data, f, ensure_ascii=False, indent=2)
-                
-        except Exception as e:
-            logger.warning(f"Failed to save to cache: {e}")
-    
-    async def translate_text(
-        self,
-        text: str,
-        target_language: str,
-        source_language: str = 'auto'
-    ) -> TranslationResult:
-        """
-        Translate text using available backends
-        """
-        start_time = datetime.now()
-        
-        try:
-            # Validate inputs
-            if not text or not text.strip():
-                return TranslationResult(
-                    translated_text="",
-                    source_language=source_language,
-                    target_language=target_language,
-                    confidence_score=1.0,
-                    method="validation",
-                    processing_time=0.0
-                )
-            
-            # Check if translation is needed
-            if source_language == target_language:
-                return TranslationResult(
-                    translated_text=text,
-                    source_language=source_language,
-                    target_language=target_language,
-                    confidence_score=1.0,
-                    method="no_translation",
-                    processing_time=0.0
-                )
-            
-            # Check cache
-            cache_key = self._get_cache_key(text, source_language, target_language)
-            cached_result = self._get_from_cache(cache_key)
-            if cached_result:
-                cached_result.method = "cache"
-                return cached_result
-            
-            # Try model backend first
-            if self.model_backend and source_language in ['en'] and target_language in ['hi']:
-                try:
-                    result = await self._translate_with_model(text, source_language, target_language)
-                    if result:
-                        processing_time = (datetime.now() - start_time).total_seconds()
-                        result.processing_time = processing_time
-                        self._save_to_cache(cache_key, result)
-                        return result
-                except Exception as e:
-                    logger.warning(f"Model translation failed: {e}")
-            
-            # Try API backend
-            if self.api_backend:
-                try:
-                    result = await self._translate_with_api(text, source_language, target_language)
-                    if result:
-                        processing_time = (datetime.now() - start_time).total_seconds()
-                        result.processing_time = processing_time
-                        self._save_to_cache(cache_key, result)
-                        return result
-                except Exception as e:
-                    logger.warning(f"API translation failed: {e}")
-            
-            # Use fallback translation
-            result = self._translate_with_fallback(text, source_language, target_language)
-            processing_time = (datetime.now() - start_time).total_seconds()
-            result.processing_time = processing_time
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Translation failed: {e}")
-            processing_time = (datetime.now() - start_time).total_seconds()
-            
-            return TranslationResult(
-                translated_text=text,  # Return original text
-                source_language=source_language,
-                target_language=target_language,
-                confidence_score=0.0,
-                method="error",
-                processing_time=processing_time
-            )
-    
-    async def _translate_with_model(
-        self,
-        text: str,
-        source_lang: str,
-        target_lang: str
-    ) -> Optional[TranslationResult]:
-        """Translate using local model"""
-        try:
-            # Run model inference in thread pool to avoid blocking
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.model_backend(text, max_length=512)
-            )
-            
-            translated_text = result[0]['translation_text']
-            
-            return TranslationResult(
-                translated_text=translated_text,
-                source_language=source_lang,
-                target_language=target_lang,
-                confidence_score=0.8,  # Model confidence
-                method="model",
-                processing_time=0.0  # Will be set by caller
-            )
-            
-        except Exception as e:
-            logger.error(f"Model translation error: {e}")
+                    self.cache.delete(cache_key)
             return None
-    
-    async def _translate_with_api(
-        self,
-        text: str,
-        source_lang: str,
-        target_lang: str
-    ) -> Optional[TranslationResult]:
-        """Translate using API backend"""
-        try:
-            # Run API call in thread pool
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: self.api_backend.translate(
-                    text,
-                    src=source_lang if source_lang != 'auto' else None,
-                    dest=target_lang
-                )
-            )
-            
-            return TranslationResult(
-                translated_text=result.text,
-                source_language=result.src,
-                target_language=target_lang,
-                confidence_score=0.9,  # API confidence
-                method="api",
-                processing_time=0.0  # Will be set by caller
-            )
-            
         except Exception as e:
-            logger.error(f"API translation error: {e}")
+            logger.warning(f"Error getting cached translation: {e}")
             return None
-    
-    def _translate_with_fallback(
-        self,
-        text: str,
-        source_lang: str,
-        target_lang: str
-    ) -> TranslationResult:
-        """Fallback translation using dictionary"""
-        translated_text = text
-        confidence = 0.1
-        
-        # Check if we have fallback translations
-        if hasattr(self, 'fallback_translations'):
-            lang_pair = (source_lang, target_lang)
-            if lang_pair in self.fallback_translations:
-                translations = self.fallback_translations[lang_pair]
-                
-                # Simple word-by-word translation
-                words = text.lower().split()
-                translated_words = []
-                
-                for word in words:
-                    if word in translations:
-                        translated_words.append(translations[word])
-                        confidence = 0.5  # Better confidence for known words
-                    else:
-                        translated_words.append(word)
-                
-                if translated_words:
-                    translated_text = ' '.join(translated_words)
-        
-        return TranslationResult(
-            translated_text=translated_text,
-            source_language=source_lang,
-            target_language=target_lang,
-            confidence_score=confidence,
-            method="fallback",
-            processing_time=0.0
-        )
-    
+
+    def _cache_translation(self, cache_key: str, translation: str):
+        """Cache translation result"""
+        if not self.cache:
+            return
+
+        try:
+            expires = datetime.now() + timedelta(seconds=self.cache_ttl)
+            data = {
+                'translation': translation,
+                'expires': expires.isoformat()
+            }
+            self.cache.setex(cache_key, self.cache_ttl, json.dumps(data))
+        except Exception as e:
+            logger.warning(f"Error caching translation: {e}")
+
+    def _preprocess_text(self, text: str, source_lang: str) -> str:
+        """Preprocess text for IndicTrans2"""
+        try:
+            # Basic cleaning
+            text = text.strip()
+
+            # Remove extra whitespace
+            text = ' '.join(text.split())
+
+            # For Indic languages, ensure proper encoding
+            if source_lang in ['hi', 'ta', 'te']:
+                text = text.encode('utf-8').decode('utf-8')
+
+            return text
+        except Exception as e:
+            logger.warning(f"Error preprocessing text: {e}")
+            return text
+
+    def _postprocess_text(self, text: str, target_lang: str) -> str:
+        """Postprocess translated text"""
+        try:
+            # Basic cleaning
+            text = text.strip()
+
+            # Remove any special tokens
+            text = text.replace('<pad>', '').replace('</s>', '').replace('<s>', '')
+            text = text.replace('<unk>', '').replace('[UNK]', '')
+
+            # Normalize whitespace
+            text = ' '.join(text.split())
+
+            return text
+        except Exception as e:
+            logger.warning(f"Error postprocessing text: {e}")
+            return text
+
     def detect_language(self, text: str) -> str:
-        """Detect language of text"""
+        """Detect language of input text (limited to supported 4 languages)"""
         try:
-            if self.api_backend:
-                result = self.api_backend.detect(text)
-                return result.lang
+            # Check for Devanagari script (Hindi)
+            if any('\u0900' <= char <= '\u097F' for char in text):
+                return 'hi'
+
+            # Check for Telugu script
+            elif any('\u0C00' <= char <= '\u0C7F' for char in text):
+                return 'te'
+
+            # Check for Tamil script
+            elif any('\u0B80' <= char <= '\u0BFF' for char in text):
+                return 'ta'
+
+            # Default to English for Latin script
             else:
-                # Simple heuristic detection
-                # Check for common Hindi characters
-                hindi_chars = set('अआइईउऊएऐओऔकखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह')
-                if any(char in hindi_chars for char in text):
-                    return 'hi'
-                else:
-                    return 'en'
-                    
+                return 'en'
+
         except Exception as e:
-            logger.warning(f"Language detection failed: {e}")
-            return 'en'  # Default to English
-    
-    def get_supported_languages(self) -> Dict[str, str]:
-        """Get supported languages"""
-        return self.supported_languages.copy()
-    
-    def clear_cache(self):
-        """Clear translation cache"""
+            logger.warning(f"Error detecting language: {e}")
+            return 'en'
+
+    async def _translate_en_to_indic(self, text: str, target_lang: str) -> str:
+        """Translate from English to Indic language using IndicTrans2"""
+        if not self.en_to_indic_model or not self.en_to_indic_tokenizer:
+            raise ValueError("English to Indic model not available")
+
         try:
-            # Clear memory cache
-            self.memory_cache.clear()
-            
-            # Clear file cache
-            for cache_file in self.cache_dir.glob("*.json"):
-                cache_file.unlink()
-            
-            logger.info("✅ Translation cache cleared")
-            
+            # Preprocess text
+            processed_text = self._preprocess_text(text, 'en')
+
+            # Get target language code
+            tgt_lang = self.indic_lang_codes[target_lang]
+
+            # Prepare input with language prefix
+            input_text = f"<2{tgt_lang}> {processed_text}"
+
+            # Tokenize input
+            inputs = self.en_to_indic_tokenizer(
+                input_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=256
+            ).to(self.device)
+
+            # Generate translation
+            with torch.no_grad():
+                outputs = self.en_to_indic_model.generate(
+                    **inputs,
+                    max_length=256,
+                    num_beams=5,
+                    early_stopping=True,
+                    do_sample=False,
+                    repetition_penalty=1.2
+                )
+
+            # Decode output
+            translation = self.en_to_indic_tokenizer.decode(
+                outputs[0],
+                skip_special_tokens=True
+            )
+
+            # Postprocess
+            translation = self._postprocess_text(translation, target_lang)
+
+            return translation
+
         except Exception as e:
-            logger.error(f"Failed to clear cache: {e}")
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics"""
-        file_cache_size = len(list(self.cache_dir.glob("*.json")))
-        
+            logger.error(f"Error in English to Indic translation: {e}")
+            raise
+
+    async def _translate_indic_to_en(self, text: str, source_lang: str) -> str:
+        """Translate from Indic language to English using IndicTrans2"""
+        if not self.indic_to_en_model or not self.indic_to_en_tokenizer:
+            raise ValueError("Indic to English model not available")
+
+        try:
+            # Preprocess text
+            processed_text = self._preprocess_text(text, source_lang)
+
+            # Get source language code
+            src_lang = self.indic_lang_codes[source_lang]
+
+            # Prepare input with language prefix
+            input_text = f"<2eng_Latn> {processed_text}"
+
+            # Tokenize input
+            inputs = self.indic_to_en_tokenizer(
+                input_text,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=256
+            ).to(self.device)
+
+            # Generate translation
+            with torch.no_grad():
+                outputs = self.indic_to_en_model.generate(
+                    **inputs,
+                    max_length=256,
+                    num_beams=5,
+                    early_stopping=True,
+                    do_sample=False,
+                    repetition_penalty=1.2
+                )
+
+            # Decode output
+            translation = self.indic_to_en_tokenizer.decode(
+                outputs[0],
+                skip_special_tokens=True
+            )
+
+            # Postprocess
+            translation = self._postprocess_text(translation, 'en')
+
+            return translation
+
+        except Exception as e:
+            logger.error(f"Error in Indic to English translation: {e}")
+            raise
+
+    async def _translate_indic_to_indic(self, text: str, source_lang: str, target_lang: str) -> str:
+        """Translate between Indic languages via English pivot"""
+        try:
+            # First translate to English
+            english_text = await self._translate_indic_to_en(text, source_lang)
+
+            # Then translate from English to target Indic language
+            final_translation = await self._translate_en_to_indic(english_text, target_lang)
+
+            return final_translation
+
+        except Exception as e:
+            logger.error(f"Error in Indic to Indic translation: {e}")
+            raise
+
+    async def translate(
+            self,
+            text: str,
+            target_lang: str,
+            source_lang: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Translate text to target language using IndicTrans2
+
+        Args:
+            text: Text to translate
+            target_lang: Target language code (en, hi, ta, te)
+            source_lang: Source language code (auto-detected if None)
+
+        Returns:
+            Dictionary with translation result and metadata
+        """
+        start_time = time.time()
+
+        try:
+            # Validate input
+            if not text or not text.strip():
+                raise ValueError("Text cannot be empty")
+
+            if len(text) > self.max_text_length:
+                raise ValueError(f"Text too long. Maximum length: {self.max_text_length}")
+
+            # Validate target language
+            if target_lang not in self.supported_languages:
+                raise ValueError(
+                    f"Unsupported target language: {target_lang}. Supported: {list(self.supported_languages.keys())}")
+
+            # Detect source language if not provided
+            if not source_lang:
+                source_lang = self.detect_language(text)
+
+            # Validate source language
+            if source_lang not in self.supported_languages:
+                raise ValueError(
+                    f"Unsupported source language: {source_lang}. Supported: {list(self.supported_languages.keys())}")
+
+            # Check if translation is needed
+            if source_lang == target_lang:
+                return {
+                    'translated_text': text,
+                    'source_language': source_lang,
+                    'target_language': target_lang,
+                    'confidence': 1.0,
+                    'processing_time': time.time() - start_time,
+                    'model_used': 'no_translation_needed'
+                }
+
+            # Check cache
+            cache_key = self._get_cache_key(text, source_lang, target_lang)
+            cached_result = self._get_cached_translation(cache_key)
+
+            if cached_result:
+                return {
+                    'translated_text': cached_result,
+                    'source_language': source_lang,
+                    'target_language': target_lang,
+                    'confidence': 0.95,
+                    'processing_time': time.time() - start_time,
+                    'model_used': 'indictrans2_cached',
+                    'from_cache': True
+                }
+
+            # Perform translation based on language pair
+            translated_text = None
+            model_used = None
+
+            if source_lang == 'en' and target_lang in ['hi', 'ta', 'te']:
+                # English to Indic
+                translated_text = await self._translate_en_to_indic(text, target_lang)
+                model_used = 'indictrans2_en_to_indic'
+
+            elif source_lang in ['hi', 'ta', 'te'] and target_lang == 'en':
+                # Indic to English
+                translated_text = await self._translate_indic_to_en(text, source_lang)
+                model_used = 'indictrans2_indic_to_en'
+
+            elif source_lang in ['hi', 'ta', 'te'] and target_lang in ['hi', 'ta', 'te']:
+                # Indic to Indic (via English pivot)
+                translated_text = await self._translate_indic_to_indic(text, source_lang, target_lang)
+                model_used = 'indictrans2_indic_to_indic_pivot'
+
+            else:
+                raise ValueError(f"Unsupported language pair: {source_lang} -> {target_lang}")
+
+            if not translated_text:
+                raise ValueError("Translation failed")
+
+            # Cache result
+            self._cache_translation(cache_key, translated_text)
+
+            return {
+                'translated_text': translated_text,
+                'source_language': source_lang,
+                'target_language': target_lang,
+                'confidence': 0.92,
+                'processing_time': time.time() - start_time,
+                'model_used': model_used,
+                'from_cache': False,
+                'dataset': 'IndicCorp'
+            }
+
+        except Exception as e:
+            logger.error(f"Translation error: {e}")
+            return {
+                'error': str(e),
+                'source_language': source_lang,
+                'target_language': target_lang,
+                'processing_time': time.time() - start_time
+            }
+
+    async def translate_batch(
+            self,
+            texts: List[str],
+            target_lang: str,
+            source_lang: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Translate multiple texts in batch
+
+        Args:
+            texts: List of texts to translate
+            target_lang: Target language code
+            source_lang: Source language code (auto-detected if None)
+
+        Returns:
+            List of translation results
+        """
+        if not settings.batch_processing:
+            # Process sequentially if batch processing is disabled
+            results = []
+            for text in texts:
+                result = await self.translate(text, target_lang, source_lang)
+                results.append(result)
+            return results
+
+        # Process in batches
+        results = []
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i:i + self.batch_size]
+            batch_tasks = [
+                self.translate(text, target_lang, source_lang)
+                for text in batch
+            ]
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+            # Handle exceptions in batch results
+            for result in batch_results:
+                if isinstance(result, Exception):
+                    results.append({
+                        'error': str(result),
+                        'target_language': target_lang
+                    })
+                else:
+                    results.append(result)
+
+        return results
+
+    def get_supported_languages(self) -> Dict[str, str]:
+        """Get list of supported languages"""
+        return self.supported_languages.copy()
+
+    def get_model_info(self) -> Dict[str, Any]:
+        """Get information about loaded models"""
         return {
-            "memory_cache_size": len(self.memory_cache),
-            "file_cache_size": file_cache_size,
-            "cache_ttl_hours": self.cache_ttl / 3600,
-            "max_cache_size": self.max_cache_size
+            'en_to_indic_available': self.en_to_indic_model is not None,
+            'indic_to_en_available': self.indic_to_en_model is not None,
+            'device': str(self.device),
+            'quantization_enabled': self.use_quantization,
+            'cache_available': self.cache is not None,
+            'supported_languages': self.get_supported_languages(),
+            'dataset': 'IndicCorp',
+            'model_type': 'IndicTrans2',
+            'language_count': len(self.supported_languages)
         }
-    
-    def get_service_health(self) -> Dict[str, Any]:
-        """Get translation service health"""
-        return {
-            "status": "healthy",
-            "backends": {
-                "model": self.model_backend is not None,
-                "api": self.api_backend is not None,
-                "fallback": hasattr(self, 'fallback_translations')
-            },
-            "supported_languages": len(self.supported_languages),
-            "cache_stats": self.get_cache_stats()
-        }
+
+    def is_language_supported(self, lang_code: str) -> bool:
+        """Check if language is supported"""
+        return lang_code in self.supported_languages
+
 
 # Global service instance
-translation_service = None
+_translation_service = None
 
-def get_translation_service() -> OptimizedTranslationService:
-    """Get or create translation service instance"""
-    global translation_service
-    if translation_service is None:
-        translation_service = OptimizedTranslationService()
-    return translation_service
+
+def get_translation_service() -> IndicTrans2Service:
+    """Get global translation service instance"""
+    global _translation_service
+    if _translation_service is None:
+        _translation_service = IndicTrans2Service()
+    return _translation_service
+
+
+# Convenience functions
+async def translate_text(
+        text: str,
+        target_lang: str,
+        source_lang: Optional[str] = None
+) -> Dict[str, Any]:
+    """Translate text using the global service"""
+    service = get_translation_service()
+    return await service.translate(text, target_lang, source_lang)
+
+
+async def translate_batch(
+        texts: List[str],
+        target_lang: str,
+        source_lang: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Translate multiple texts using the global service"""
+    service = get_translation_service()
+    return await service.translate_batch(texts, target_lang, source_lang)
+
+
+def detect_language(text: str) -> str:
+    """Detect language of text"""
+    service = get_translation_service()
+    return service.detect_language(text)
+
+
+def get_supported_languages() -> Dict[str, str]:
+    """Get supported languages"""
+    service = get_translation_service()
+    return service.get_supported_languages()
+
+
+def is_language_supported(lang_code: str) -> bool:
+    """Check if language is supported"""
+    service = get_translation_service()
+    return service.is_language_supported(lang_code)
 
