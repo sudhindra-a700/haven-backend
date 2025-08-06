@@ -10,7 +10,8 @@ from pydantic import BaseModel, validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from translation_service import get_translation_service, TranslationResult
+from translation_service_smart import translation_service as get_translation_service
+from translation_service_smart import translation_service
 from auth_middleware import get_current_user
 from models import User
 
