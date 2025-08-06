@@ -13,9 +13,8 @@ import json
 import asyncio
 from enum import Enum
 
-# Import updated services
-from updated_fraud_detection_service import enhanced_fraud_detection_service
-from data_loader_service import fraud_data_loader
+# Import services
+from fraud_detection_service import enhanced_fraud_detection_service
 
 logger = logging.getLogger(__name__)
 
