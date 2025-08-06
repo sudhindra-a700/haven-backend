@@ -11,7 +11,8 @@ from pydantic import BaseModel, validator
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from simplification_service import get_simplification_service, SimplificationResult
+from simplification_service_smart import simplification_service as get_simplification_service
+from simplification_service_smart import simplification_service
 from auth_middleware import get_current_user
 from models import User
 
