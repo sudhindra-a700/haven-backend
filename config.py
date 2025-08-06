@@ -132,6 +132,8 @@ class Settings(BaseSettings):
     
     # JWT Configuration
     jwt_algorithm: str = Field(default="HS256", env="JWT_ALGORITHM")
+    jwt_secret_key: str = Field(default="dev-secret-key-change-in-production", env="JWT_SECRET_KEY")
+    jwt_expiration_hours: int = Field(default=24, env="JWT_EXPIRATION_HOURS")
     jwt_access_token_expire_minutes: int = Field(default=30, env="JWT_ACCESS_TOKEN_EXPIRE_MINUTES")
     jwt_refresh_token_expire_days: int = Field(default=7, env="JWT_REFRESH_TOKEN_EXPIRE_DAYS")
     
@@ -247,15 +249,15 @@ class Settings(BaseSettings):
             "admin_api_key": self.algolia_admin_api_key,
         }
 
-# Global settings instance
-settings = Settings()
+# Global settings instance - use get_settings() function instead
+# settings = Settings()  # Commented out to prevent validation errors
 
 # Configuration manager for backward compatibility
 class ConfigManager:
     """Configuration manager for the application"""
     
     def __init__(self):
-        self.settings = settings
+        self.settings = Settings()
     
     def get(self, key: str, default=None):
         """Get configuration value"""
@@ -284,10 +286,11 @@ config_manager = ConfigManager()
 # Functions for backward compatibility
 def get_settings() -> Settings:
     """Get the global settings instance"""
-    return settings
+    return Settings()
 
 def get_database_config() -> dict:
     """Get database configuration"""
+    settings = get_settings()
     return {
         "url": settings.database_url_constructed,
         "host": settings.database_host,
