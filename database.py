@@ -19,19 +19,27 @@ logger = logging.getLogger(__name__)
 
 # Get settings
 settings = get_settings()
-db_config = get_database_config(settings.environment)
+db_config = get_database_config()
 
 # Database URL
-DATABASE_URL = settings.database_url
+DATABASE_URL = settings.database_url_constructed
+
+# Default database connection pool configuration
+DEFAULT_POOL_CONFIG = {
+    "pool_size": 5,
+    "max_overflow": 10,
+    "pool_timeout": 30,
+    "pool_recycle": 3600
+}
 
 # Create engine with connection pooling
 engine = create_engine(
     DATABASE_URL,
     poolclass=QueuePool,
-    pool_size=db_config["pool_size"],
-    max_overflow=db_config["max_overflow"],
-    pool_timeout=db_config["pool_timeout"],
-    pool_recycle=db_config["pool_recycle"],
+    pool_size=DEFAULT_POOL_CONFIG["pool_size"],
+    max_overflow=DEFAULT_POOL_CONFIG["max_overflow"],
+    pool_timeout=DEFAULT_POOL_CONFIG["pool_timeout"],
+    pool_recycle=DEFAULT_POOL_CONFIG["pool_recycle"],
     echo=settings.is_development,  # Log SQL queries in development
     future=True
 )
