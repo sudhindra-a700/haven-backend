@@ -1,9 +1,9 @@
 """
-Authentication Middleware for HAVEN Crowdfunding Platform - Complete Fixed Version
-Secure JWT token validation and user authentication with all errors resolved
+Enhanced Authentication Middleware for HAVEN Crowdfunding Platform
+Secure JWT token validation and user authentication with role-based access control
 """
 
-import jwt as pyjwt  # FIXED: Use PyJWT with alias to avoid conflicts
+import jwt as pyjwt  # Use PyJWT with alias to avoid conflicts
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
@@ -32,13 +32,21 @@ except ImportError:
         return None
 
 try:
-    from models import User
+    from models import User, UserRole, IndividualRegistration, OrganizationRegistration
 except ImportError:
-    # Mock User model if models import fails
+    # Mock models if models import fails
+    class UserRole:
+        INDIVIDUAL = "individual"
+        ORGANIZATION = "organization"
+        ADMIN = "admin"
+        MODERATOR = "moderator"
+    
     class User:
         id = None
         email = None
         is_active = True
+        role = None
+        is_registered = False
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +60,14 @@ class AuthenticationError(Exception):
     """Custom authentication error"""
     pass
 
+class AuthorizationError(Exception):
+    """Custom authorization error"""
+    pass
+
 class TokenManager:
-    """JWT Token management - FIXED: All JWT configuration issues resolved"""
+    """JWT Token management"""
     
     def __init__(self):
-        # FIXED: Use the correct settings attributes
         self.secret_key = settings.jwt_secret_key
         self.algorithm = settings.jwt_algorithm
         self.expiration_hours = settings.jwt_expiration_hours
@@ -70,7 +81,6 @@ class TokenManager:
         to_encode.update({"exp": expire, "type": "access"})
         
         try:
-            # FIXED: Use pyjwt instead of jwt
             encoded_jwt = pyjwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
             return encoded_jwt
         except Exception as e:
@@ -84,7 +94,6 @@ class TokenManager:
         to_encode.update({"exp": expire, "type": "refresh"})
         
         try:
-            # FIXED: Use pyjwt instead of jwt
             encoded_jwt = pyjwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
             return encoded_jwt
         except Exception as e:
@@ -94,7 +103,6 @@ class TokenManager:
     def verify_token(self, token: str) -> Dict[str, Any]:
         """Verify and decode JWT token"""
         try:
-            # FIXED: Use pyjwt instead of jwt
             payload = pyjwt.decode(token, self.secret_key, algorithms=[self.algorithm])
             
             # Check token type
@@ -108,7 +116,6 @@ class TokenManager:
             
             return payload
         
-        # FIXED: Use pyjwt exceptions
         except pyjwt.ExpiredSignatureError:
             raise AuthenticationError("Token has expired")
         except pyjwt.JWTError as e:
@@ -118,7 +125,6 @@ class TokenManager:
     def refresh_access_token(self, refresh_token: str) -> str:
         """Create new access token from refresh token"""
         try:
-            # FIXED: Use pyjwt instead of jwt
             payload = pyjwt.decode(refresh_token, self.secret_key, algorithms=[self.algorithm])
             
             # Check token type
@@ -129,12 +135,12 @@ class TokenManager:
             user_data = {
                 "sub": payload.get("sub"),
                 "email": payload.get("email"),
-                "user_id": payload.get("user_id")
+                "user_id": payload.get("user_id"),
+                "role": payload.get("role")
             }
             
             return self.create_access_token(user_data)
         
-        # FIXED: Use pyjwt exceptions
         except pyjwt.ExpiredSignatureError:
             raise AuthenticationError("Refresh token has expired")
         except pyjwt.JWTError as e:
@@ -162,7 +168,7 @@ class PasswordManager:
         """Verify password against hash"""
         return pwd_context.verify(plain_password, hashed_password)
 
-# Authentication dependency functions
+# Base authentication dependency functions
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
@@ -206,6 +212,8 @@ async def get_current_user(
         mock_user.id = user_id
         mock_user.email = email
         mock_user.is_active = True
+        mock_user.role = payload.get("role", UserRole.INDIVIDUAL)
+        mock_user.is_registered = payload.get("is_registered", False)
         return mock_user
         
     except AuthenticationError as e:
@@ -229,6 +237,122 @@ async def get_current_active_user(current_user: User = Depends(get_current_user)
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Inactive user"
         )
+    return current_user
+
+# NEW: Role-based authentication dependency functions
+
+async def get_current_user_individual(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """Get current user - must be INDIVIDUAL role and registered"""
+    if current_user.role != UserRole.INDIVIDUAL:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only individuals can perform this action"
+        )
+    if not current_user.is_registered:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please complete individual registration first"
+        )
+    return current_user
+
+async def get_current_user_organization(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """Get current user - must be ORGANIZATION role and registered"""
+    if current_user.role != UserRole.ORGANIZATION:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only organizations can perform this action"
+        )
+    if not current_user.is_registered:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Please complete organization registration first"
+        )
+    return current_user
+
+async def get_current_user_admin(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """Get current user - must be ADMIN role"""
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required"
+        )
+    return current_user
+
+async def get_current_user_moderator(
+    current_user: User = Depends(get_current_user)
+) -> User:
+    """Get current user - must be MODERATOR or ADMIN role"""
+    if current_user.role not in [UserRole.MODERATOR, UserRole.ADMIN]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Moderator or admin access required"
+        )
+    return current_user
+
+async def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Require admin role - alias for get_current_user_admin"""
+    return await get_current_user_admin(current_user)
+
+# Registration validation functions
+
+async def validate_individual_registration(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> User:
+    """Validate that user has completed individual registration"""
+    if current_user.role != UserRole.INDIVIDUAL:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User must be registered as individual"
+        )
+    
+    if db is not None:
+        try:
+            registration = db.query(IndividualRegistration).filter(
+                IndividualRegistration.user_id == current_user.id
+            ).first()
+            
+            if not registration:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Individual registration not found. Please complete registration."
+                )
+        except Exception as e:
+            logger.warning(f"Registration validation failed: {e}")
+    
+    return current_user
+
+async def validate_organization_registration(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> User:
+    """Validate that user has completed organization registration"""
+    if current_user.role != UserRole.ORGANIZATION:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User must be registered as organization"
+        )
+    
+    if db is not None:
+        try:
+            registration = db.query(OrganizationRegistration).filter(
+                OrganizationRegistration.user_id == current_user.id
+            ).first()
+            
+            if not registration:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Organization registration not found. Please complete registration."
+                )
+        except Exception as e:
+            logger.warning(f"Registration validation failed: {e}")
+    
     return current_user
 
 # Optional authentication (doesn't raise error if no token)
@@ -278,19 +402,58 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify password"""
     return PasswordManager.verify_password(plain_password, hashed_password)
 
+# Utility functions for role checking
+def check_user_role(user: User, required_role: UserRole) -> bool:
+    """Check if user has required role"""
+    return user.role == required_role
+
+def check_user_roles(user: User, required_roles: list) -> bool:
+    """Check if user has any of the required roles"""
+    return user.role in required_roles
+
+def is_individual(user: User) -> bool:
+    """Check if user is individual"""
+    return user.role == UserRole.INDIVIDUAL
+
+def is_organization(user: User) -> bool:
+    """Check if user is organization"""
+    return user.role == UserRole.ORGANIZATION
+
+def is_admin(user: User) -> bool:
+    """Check if user is admin"""
+    return user.role == UserRole.ADMIN
+
+def is_moderator(user: User) -> bool:
+    """Check if user is moderator or admin"""
+    return user.role in [UserRole.MODERATOR, UserRole.ADMIN]
+
 # Export all authentication utilities
 __all__ = [
     "TokenManager",
     "PasswordManager",
     "AuthenticationError",
+    "AuthorizationError",
     "get_current_user",
     "get_current_active_user",
+    "get_current_user_individual",
+    "get_current_user_organization",
+    "get_current_user_admin",
+    "get_current_user_moderator",
+    "require_admin",
+    "validate_individual_registration",
+    "validate_organization_registration",
     "get_current_user_optional",
     "verify_token",
     "create_access_token",
     "create_refresh_token",
     "hash_password",
     "verify_password",
+    "check_user_role",
+    "check_user_roles",
+    "is_individual",
+    "is_organization",
+    "is_admin",
+    "is_moderator",
     "token_manager"
 ]
 
