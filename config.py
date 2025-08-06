@@ -138,113 +138,114 @@ class Settings(BaseSettings):
     # Webhook Configuration
     webhook_secret: Optional[str] = Field(default=None, env="WEBHOOK_SECRET")
 
-class Config:
-    env_file = ".env"
-    case_sensitive = False
+    class Config:
+        env_file = ".env"
+        case_sensitive = False
+        extra = "ignore"  # Allow extra environment variables
 
-@validator('cors_origins')
-def parse_cors_origins(cls, v):
-    """Parse CORS origins from comma-separated string"""
-    if isinstance(v, str):
-        return [origin.strip() for origin in v.split(',')]
-    return v
+    @validator('cors_origins')
+    def parse_cors_origins(cls, v):
+        """Parse CORS origins from comma-separated string"""
+        if isinstance(v, str):
+            return [origin.strip() for origin in v.split(',')]
+        return v
 
-@validator('allowed_extensions')
-def parse_allowed_extensions(cls, v):
-    """Parse allowed extensions from comma-separated string"""
-    if isinstance(v, str):
-        return [ext.strip().lower() for ext in v.split(',')]
-    return v
+    @validator('allowed_extensions')
+    def parse_allowed_extensions(cls, v):
+        """Parse allowed extensions from comma-separated string"""
+        if isinstance(v, str):
+            return [ext.strip().lower() for ext in v.split(',')]
+        return v
 
-@property
-def is_production(self) -> bool:
-    """Check if running in production environment"""
-    return self.environment.lower() == "production"
+    @property
+    def is_production(self) -> bool:
+        """Check if running in production environment"""
+        return self.environment.lower() == "production"
 
-@property
-def is_development(self) -> bool:
-    """Check if running in development environment"""
-    return self.environment.lower() == "development"
+    @property
+    def is_development(self) -> bool:
+        """Check if running in development environment"""
+        return self.environment.lower() == "development"
 
-@property
-def database_url_constructed(self) -> str:
-    """Construct database URL if not provided"""
-    if self.database_url:
-        return self.database_url
-    return f"postgresql://{self.database_user}:{self.database_password}@{self.database_host}:{self.database_port}/{self.database_name}"
+    @property
+    def database_url_constructed(self) -> str:
+        """Construct database URL if not provided"""
+        if self.database_url:
+            return self.database_url
+        return f"postgresql://{self.database_user}:{self.database_password}@{self.database_host}:{self.database_port}/{self.database_name}"
 
-@property
-def redis_url_constructed(self) -> str:
-    """Construct Redis URL if not provided"""
-    if self.redis_url:
-        return self.redis_url
-    
-    auth_part = f":{self.redis_password}@" if self.redis_password else ""
-    return f"redis://{auth_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
+    @property
+    def redis_url_constructed(self) -> str:
+        """Construct Redis URL if not provided"""
+        if self.redis_url:
+            return self.redis_url
+        
+        auth_part = f":{self.redis_password}@" if self.redis_password else ""
+        return f"redis://{auth_part}{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
-@property
-def firebase_service_account_dict(self) -> dict:
-    """Decode Firebase service account JSON from base64"""
-    try:
-        decoded_json = base64.b64decode(self.firebase_service_account_key_json_base64).decode('utf-8')
-        return json.loads(decoded_json)
-    except Exception as e:
-        logger.error(f"Error decoding Firebase service account JSON: {e}")
+    @property
+    def firebase_service_account_dict(self) -> dict:
+        """Decode Firebase service account JSON from base64"""
+        try:
+            decoded_json = base64.b64decode(self.firebase_service_account_key_json_base64).decode('utf-8')
+            return json.loads(decoded_json)
+        except Exception as e:
+            logger.error(f"Error decoding Firebase service account JSON: {e}")
+            return {}
+
+    def get_feature_flags(self) -> dict:
+        """Get all feature flags as a dictionary"""
+        return {
+            "oauth_enabled": self.features_oauth_enabled,
+            "translation_enabled": self.features_translation_enabled,
+            "simplification_enabled": self.features_simplification_enabled,
+            "fraud_detection_enabled": self.features_fraud_detection_enabled,
+            "analytics_enabled": self.features_analytics_enabled,
+            "file_upload_enabled": self.features_file_upload_enabled,
+            "batch_operations_enabled": self.features_batch_operations_enabled,
+        }
+
+    def get_oauth_config(self, provider: str) -> dict:
+        """Get OAuth configuration for a provider"""
+        if provider.lower() == "google":
+            return {
+                "client_id": self.google_client_id,
+                "client_secret": self.google_client_secret,
+                "redirect_uri": self.google_redirect_uri,
+            }
+        elif provider.lower() == "facebook":
+            return {
+                "client_id": self.facebook_client_id,
+                "client_secret": self.facebook_client_secret,
+                "redirect_uri": self.facebook_redirect_uri,
+            }
         return {}
 
-def get_feature_flags(self) -> dict:
-    """Get all feature flags as a dictionary"""
-    return {
-        "oauth_enabled": self.features_oauth_enabled,
-        "translation_enabled": self.features_translation_enabled,
-        "simplification_enabled": self.features_simplification_enabled,
-        "fraud_detection_enabled": self.features_fraud_detection_enabled,
-        "analytics_enabled": self.features_analytics_enabled,
-        "file_upload_enabled": self.features_file_upload_enabled,
-        "batch_operations_enabled": self.features_batch_operations_enabled,
-    }
-
-def get_oauth_config(self, provider: str) -> dict:
-    """Get OAuth configuration for a provider"""
-    if provider.lower() == "google":
+    def get_instamojo_config(self) -> dict:
+        """Get Instamojo configuration"""
         return {
-            "client_id": self.google_client_id,
-            "client_secret": self.google_client_secret,
-            "redirect_uri": self.google_redirect_uri,
+            "api_key": self.instamojo_api_key,
+            "auth_token": self.instamojo_auth_token,
+            "sandbox": self.instamojo_sandbox,
+            "private_salt": self.instamojo_private_salt,
         }
-    elif provider.lower() == "facebook":
+
+    def get_brevo_config(self) -> dict:
+        """Get Brevo configuration"""
         return {
-            "client_id": self.facebook_client_id,
-            "client_secret": self.facebook_client_secret,
-            "redirect_uri": self.facebook_redirect_uri,
+            "api_key": self.brevo_api_key,
+            "sender_name": self.brevo_sender_name,
+            "sender_email": self.brevo_sender_email,
+            "mailing_list_id": self.brevo_mailing_list_id,
         }
-    return {}
 
-def get_instamojo_config(self) -> dict:
-    """Get Instamojo configuration"""
-    return {
-        "api_key": self.instamojo_api_key,
-        "auth_token": self.instamojo_auth_token,
-        "sandbox": self.instamojo_sandbox,
-        "private_salt": self.instamojo_private_salt,
-    }
-
-def get_brevo_config(self) -> dict:
-    """Get Brevo configuration"""
-    return {
-        "api_key": self.brevo_api_key,
-        "sender_name": self.brevo_sender_name,
-        "sender_email": self.brevo_sender_email,
-        "mailing_list_id": self.brevo_mailing_list_id,
-    }
-
-def get_algolia_config(self) -> dict:
-    """Get Algolia configuration"""
-    return {
-        "app_id": self.algolia_app_id,
-        "api_key": self.algolia_api_key,
-        "admin_api_key": self.algolia_admin_api_key,
-    }
+    def get_algolia_config(self) -> dict:
+        """Get Algolia configuration"""
+        return {
+            "app_id": self.algolia_app_id,
+            "api_key": self.algolia_api_key,
+            "admin_api_key": self.algolia_admin_api_key,
+        }
 
 # Global settings instance
 settings = Settings()
