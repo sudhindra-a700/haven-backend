@@ -1,387 +1,512 @@
 """
-Database Models for HAVEN Crowdfunding Platform
-SQLAlchemy models with proper relationships and constraints
+Enhanced Database Models for HAVEN Platform
+Updated to support the expanded fraud detection database with multi-category support
 """
 
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, JSON, Enum as SQLEnum, Index
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.sql import func
+from pydantic import BaseModel, Field, validator
+from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
-from typing import Optional, List
-from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, DateTime, 
-    Numeric, ForeignKey, Enum, Index, UniqueConstraint
-)
-from sqlalchemy.orm import relationship, validates
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from enum import Enum
 import uuid
-import enum
+import json
 
-from database import Base
+Base = declarative_base()
 
 # Enums
-class UserRole(enum.Enum):
-    USER = "user"
-    ADMIN = "admin"
-    MODERATOR = "moderator"
+class CampaignCategory(str, Enum):
+    MEDICAL = "Medical"
+    EDUCATION = "Education"
+    DISASTER_RELIEF = "Disaster Relief"
+    ANIMAL_WELFARE = "Animal Welfare"
+    ENVIRONMENT = "Environment"
+    COMMUNITY_DEVELOPMENT = "Community Development"
+    TECHNOLOGY = "Technology"
+    SOCIAL_CAUSES = "Social Causes"
+    ARTS_CULTURE = "Arts & Culture"
+    SPORTS = "Sports"
+    UNKNOWN = "Unknown"
 
-class CampaignStatus(enum.Enum):
-    DRAFT = "draft"
+class OrganizerType(str, Enum):
+    INDIVIDUAL = "individual"
+    ORGANIZATION = "organization"
+    NGO = "ngo"
+    GOVERNMENT = "government"
+
+class Platform(str, Enum):
+    KETTO = "Ketto"
+    MILAAP = "Milaap"
+    IMPACTGURU = "ImpactGuru"
+    GIVEINDIA = "GiveIndia"
+    INDIADONATES = "INDIAdonates"
+    OTHER = "Other"
+    UNKNOWN = "Unknown"
+
+class RiskLevel(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+class VerificationStatus(str, Enum):
+    VERIFIED = "verified"
     PENDING = "pending"
-    APPROVED = "approved"
     REJECTED = "rejected"
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
 
-class CampaignCategory(enum.Enum):
-    EDUCATION = "education"
-    HEALTH = "health"
-    COMMUNITY = "community"
-    TECHNOLOGY = "technology"
-    ENVIRONMENT = "environment"
-    ARTS = "arts"
-    SPORTS = "sports"
-    OTHER = "other"
+class FraudReportStatus(str, Enum):
+    RECEIVED = "received"
+    INVESTIGATING = "investigating"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
 
-class TransactionType(enum.Enum):
-    DONATION = "donation"
-    REFUND = "refund"
-    WITHDRAWAL = "withdrawal"
+# SQLAlchemy Models
 
-class TransactionStatus(enum.Enum):
-    PENDING = "pending"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-# Base model with common fields
-class BaseModel(Base):
-    __abstract__ = True
+class FraudDetectionEntity(Base):
+    """
+    Enhanced fraud detection entity model for the expanded database
+    Supports all categories and comprehensive fraud detection features
+    """
+    __tablename__ = "fraud_detection_entities"
     
-    id = Column(Integer, primary_key=True, index=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-
-# User model
-class User(BaseModel):
-    __tablename__ = "users"
+    # Primary identification
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = Column(String(500), nullable=False, index=True)
+    description = Column(Text)
     
-    # Basic information
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    hashed_password = Column(String(255), nullable=True)  # Nullable for OAuth users
-    full_name = Column(String(255), nullable=False)
-    phone_number = Column(String(20), nullable=True)
+    # Category information
+    category = Column(SQLEnum(CampaignCategory), nullable=False, index=True)
+    subcategory = Column(String(100), index=True)
+    platform = Column(SQLEnum(Platform), nullable=False, index=True)
     
-    # Profile information
-    profile_picture = Column(String(500), nullable=True)
-    bio = Column(Text, nullable=True)
-    date_of_birth = Column(DateTime, nullable=True)
+    # Organizer information
+    organizer_name = Column(String(200), nullable=False, index=True)
+    organizer_type = Column(SQLEnum(OrganizerType), nullable=False, index=True)
+    beneficiary = Column(String(200))
     
-    # Account status
-    is_active = Column(Boolean, default=True, nullable=False)
-    is_verified = Column(Boolean, default=False, nullable=False)
-    email_verified = Column(Boolean, default=False, nullable=False)
-    phone_verified = Column(Boolean, default=False, nullable=False)
-    
-    # Role and permissions
-    role = Column(Enum(UserRole), default=UserRole.USER, nullable=False)
-    
-    # OAuth information
-    google_id = Column(String(100), nullable=True, unique=True)
-    facebook_id = Column(String(100), nullable=True, unique=True)
-    
-    # KYC information
-    pan_number = Column(String(20), nullable=True)
-    aadhar_number = Column(String(20), nullable=True)
-    kyc_verified = Column(Boolean, default=False, nullable=False)
-    kyc_documents = Column(JSONB, nullable=True)
-    
-    # Relationships
-    campaigns = relationship("Campaign", back_populates="creator", cascade="all, delete-orphan")
-    donations = relationship("Donation", back_populates="donor", cascade="all, delete-orphan")
-    comments = relationship("Comment", back_populates="user", cascade="all, delete-orphan")
-    
-    # Indexes
-    __table_args__ = (
-        Index('idx_user_email', 'email'),
-        Index('idx_user_role', 'role'),
-        Index('idx_user_active', 'is_active'),
-    )
-    
-    @validates('email')
-    def validate_email(self, key, email):
-        import re
-        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(pattern, email):
-            raise ValueError("Invalid email format")
-        return email.lower()
-    
-    def __repr__(self):
-        return f"<User(id={self.id}, email='{self.email}', role='{self.role.value}')>"
-
-# Campaign model
-class Campaign(BaseModel):
-    __tablename__ = "campaigns"
-    
-    # Basic information
-    title = Column(String(255), nullable=False)
-    description = Column(Text, nullable=False)
-    short_description = Column(String(500), nullable=True)
+    # Location information
+    location_city = Column(String(100), index=True)
+    location_state = Column(String(100), index=True)
     
     # Financial information
-    goal_amount = Column(Numeric(12, 2), nullable=False)
-    current_amount = Column(Numeric(12, 2), default=0, nullable=False)
-    currency = Column(String(3), default="INR", nullable=False)
+    funds_required = Column(Float, nullable=False, index=True)
+    funds_raised = Column(Float, default=0.0, index=True)
+    funding_percentage = Column(Float, default=0.0, index=True)
     
-    # Campaign details
-    category = Column(Enum(CampaignCategory), nullable=False)
-    status = Column(Enum(CampaignStatus), default=CampaignStatus.DRAFT, nullable=False)
+    # Campaign timeline
+    campaign_start_date = Column(DateTime, index=True)
+    campaign_age_days = Column(Integer, default=0, index=True)
     
-    # Media
-    featured_image = Column(String(500), nullable=True)
-    gallery_images = Column(JSONB, nullable=True)  # Array of image URLs
-    video_url = Column(String(500), nullable=True)
+    # Fraud detection results
+    is_fraudulent = Column(Boolean, nullable=False, index=True)
+    fraud_score = Column(Float, default=0.0, index=True)
+    risk_level = Column(SQLEnum(RiskLevel), default=RiskLevel.MEDIUM, index=True)
+    verification_status = Column(SQLEnum(VerificationStatus), default=VerificationStatus.PENDING, index=True)
     
-    # Timeline
-    start_date = Column(DateTime, nullable=True)
-    end_date = Column(DateTime, nullable=True)
+    # Verification features
+    has_government_verification = Column(Boolean, default=False, index=True)
+    has_complete_documentation = Column(Boolean, default=True)
+    has_clear_beneficiary = Column(Boolean, default=True)
+    has_contact_info = Column(Boolean, default=True)
+    has_medical_verification = Column(Boolean, default=False)
+    has_regular_updates = Column(Boolean, default=False)
+    has_social_media_presence = Column(Boolean, default=False)
+    has_website = Column(Boolean, default=False)
+    has_media_coverage = Column(Boolean, default=False)
     
-    # Organization details
-    organization_name = Column(String(255), nullable=True)
-    ngo_darpan_id = Column(String(50), nullable=True)
-    fcra_number = Column(String(50), nullable=True)
+    # Risk indicators
+    is_new_organization = Column(Boolean, default=False, index=True)
+    has_unrealistic_goal = Column(Boolean, default=False, index=True)
+    has_duplicate_content = Column(Boolean, default=False, index=True)
+    limited_social_proof = Column(Boolean, default=False)
+    minimal_updates = Column(Boolean, default=False)
+    unclear_fund_usage = Column(Boolean, default=False)
+    no_previous_campaigns = Column(Boolean, default=False)
     
-    # Verification and moderation
-    is_verified = Column(Boolean, default=False, nullable=False)
-    verification_documents = Column(JSONB, nullable=True)
-    moderation_notes = Column(Text, nullable=True)
-    fraud_score = Column(Numeric(3, 2), nullable=True)  # 0.00 to 1.00
+    # Additional features (stored as JSON)
+    features = Column(JSON)
     
-    # SEO and metadata
-    slug = Column(String(255), unique=True, nullable=True)
-    meta_description = Column(String(500), nullable=True)
-    tags = Column(JSONB, nullable=True)  # Array of tags
+    # Metadata
+    created_at = Column(DateTime, default=func.now(), index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    last_analyzed = Column(DateTime, index=True)
+    analysis_version = Column(String(50), default="2.0_expanded")
     
-    # Statistics
-    view_count = Column(Integer, default=0, nullable=False)
-    share_count = Column(Integer, default=0, nullable=False)
-    donor_count = Column(Integer, default=0, nullable=False)
-    
-    # Foreign keys
-    creator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    
-    # Relationships
-    creator = relationship("User", back_populates="campaigns")
-    donations = relationship("Donation", back_populates="campaign", cascade="all, delete-orphan")
-    updates = relationship("CampaignUpdate", back_populates="campaign", cascade="all, delete-orphan")
-    comments = relationship("Comment", back_populates="campaign", cascade="all, delete-orphan")
-    
-    # Indexes
+    # Indexes for performance
     __table_args__ = (
-        Index('idx_campaign_status', 'status'),
-        Index('idx_campaign_category', 'category'),
-        Index('idx_campaign_creator', 'creator_id'),
-        Index('idx_campaign_dates', 'start_date', 'end_date'),
-        Index('idx_campaign_slug', 'slug'),
-    )
-    
-    @validates('goal_amount')
-    def validate_goal_amount(self, key, amount):
-        if amount <= 0:
-            raise ValueError("Goal amount must be positive")
-        return amount
-    
-    @property
-    def progress_percentage(self):
-        if self.goal_amount > 0:
-            return min((self.current_amount / self.goal_amount) * 100, 100)
-        return 0
-    
-    @property
-    def is_active(self):
-        return self.status == CampaignStatus.ACTIVE
-    
-    @property
-    def is_completed(self):
-        return self.status == CampaignStatus.COMPLETED or self.current_amount >= self.goal_amount
-    
-    def __repr__(self):
-        return f"<Campaign(id={self.id}, title='{self.title}', status='{self.status.value}')>"
-
-# Donation model
-class Donation(BaseModel):
-    __tablename__ = "donations"
-    
-    # Basic information
-    amount = Column(Numeric(12, 2), nullable=False)
-    currency = Column(String(3), default="INR", nullable=False)
-    
-    # Donor information
-    donor_name = Column(String(255), nullable=True)  # For anonymous donations
-    donor_email = Column(String(255), nullable=True)
-    is_anonymous = Column(Boolean, default=False, nullable=False)
-    
-    # Payment information
-    payment_id = Column(String(100), nullable=True)
-    payment_method = Column(String(50), nullable=True)
-    payment_status = Column(Enum(TransactionStatus), default=TransactionStatus.PENDING, nullable=False)
-    
-    # Message and dedication
-    message = Column(Text, nullable=True)
-    dedication = Column(String(255), nullable=True)
-    
-    # Tax and receipts
-    tax_receipt_required = Column(Boolean, default=False, nullable=False)
-    tax_receipt_url = Column(String(500), nullable=True)
-    
-    # Foreign keys
-    donor_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for guest donations
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
-    
-    # Relationships
-    donor = relationship("User", back_populates="donations")
-    campaign = relationship("Campaign", back_populates="donations")
-    
-    # Indexes
-    __table_args__ = (
-        Index('idx_donation_campaign', 'campaign_id'),
-        Index('idx_donation_donor', 'donor_id'),
-        Index('idx_donation_status', 'payment_status'),
-        Index('idx_donation_amount', 'amount'),
-    )
-    
-    @validates('amount')
-    def validate_amount(self, key, amount):
-        if amount <= 0:
-            raise ValueError("Donation amount must be positive")
-        return amount
-    
-    def __repr__(self):
-        return f"<Donation(id={self.id}, amount={self.amount}, campaign_id={self.campaign_id})>"
-
-# Campaign Update model
-class CampaignUpdate(BaseModel):
-    __tablename__ = "campaign_updates"
-    
-    title = Column(String(255), nullable=False)
-    content = Column(Text, nullable=False)
-    images = Column(JSONB, nullable=True)  # Array of image URLs
-    
-    # Foreign keys
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
-    
-    # Relationships
-    campaign = relationship("Campaign", back_populates="updates")
-    
-    # Indexes
-    __table_args__ = (
-        Index('idx_update_campaign', 'campaign_id'),
+        Index('idx_category_risk', 'category', 'risk_level'),
+        Index('idx_platform_fraud', 'platform', 'is_fraudulent'),
+        Index('idx_organizer_verification', 'organizer_type', 'verification_status'),
+        Index('idx_financial_range', 'funds_required', 'funding_percentage'),
+        Index('idx_temporal_analysis', 'campaign_start_date', 'campaign_age_days'),
     )
 
-# Comment model
-class Comment(BaseModel):
-    __tablename__ = "comments"
+class FraudAnalysisHistory(Base):
+    """
+    History of fraud analysis results for tracking changes over time
+    """
+    __tablename__ = "fraud_analysis_history"
     
-    content = Column(Text, nullable=False)
-    is_approved = Column(Boolean, default=True, nullable=False)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_id = Column(String, nullable=False, index=True)
     
-    # Foreign keys
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
-    parent_id = Column(Integer, ForeignKey("comments.id"), nullable=True)  # For replies
+    # Analysis results
+    fraud_score = Column(Float, nullable=False)
+    confidence = Column(Float, nullable=False)
+    risk_level = Column(SQLEnum(RiskLevel), nullable=False)
     
-    # Relationships
-    user = relationship("User", back_populates="comments")
-    campaign = relationship("Campaign", back_populates="comments")
-    replies = relationship("Comment", backref="parent", remote_side=[id])
+    # Analysis details
+    analysis_method = Column(String(100))  # rule-based, ml-based, hybrid
+    model_version = Column(String(50))
+    explanation = Column(JSON)
+    recommendations = Column(JSON)
     
-    # Indexes
+    # Metadata
+    analyzed_at = Column(DateTime, default=func.now(), index=True)
+    analyzer_id = Column(String(100))  # system, user_id, etc.
+    
     __table_args__ = (
-        Index('idx_comment_campaign', 'campaign_id'),
-        Index('idx_comment_user', 'user_id'),
-        Index('idx_comment_approved', 'is_approved'),
+        Index('idx_entity_analysis_time', 'entity_id', 'analyzed_at'),
     )
 
-# Transaction model for financial tracking
-class Transaction(BaseModel):
-    __tablename__ = "transactions"
+class FraudReport(Base):
+    """
+    User-reported fraud cases
+    """
+    __tablename__ = "fraud_reports"
     
-    # Transaction details
-    transaction_id = Column(String(100), unique=True, nullable=False)
-    amount = Column(Numeric(12, 2), nullable=False)
-    currency = Column(String(3), default="INR", nullable=False)
-    transaction_type = Column(Enum(TransactionType), nullable=False)
-    status = Column(Enum(TransactionStatus), default=TransactionStatus.PENDING, nullable=False)
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    entity_id = Column(String, nullable=False, index=True)
     
-    # Payment gateway information
-    gateway_transaction_id = Column(String(100), nullable=True)
-    gateway_name = Column(String(50), nullable=True)
-    gateway_response = Column(JSONB, nullable=True)
+    # Report details
+    fraud_type = Column(String(100), nullable=False)
+    evidence = Column(Text)
+    reporter_info = Column(JSON)
     
-    # References
-    donation_id = Column(Integer, ForeignKey("donations.id"), nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=True)
+    # Status tracking
+    status = Column(SQLEnum(FraudReportStatus), default=FraudReportStatus.RECEIVED, index=True)
+    investigation_notes = Column(Text)
+    resolution = Column(Text)
     
-    # Relationships
-    donation = relationship("Donation")
-    user = relationship("User")
-    campaign = relationship("Campaign")
+    # Metadata
+    reported_at = Column(DateTime, default=func.now(), index=True)
+    investigated_at = Column(DateTime)
+    resolved_at = Column(DateTime)
+    investigator_id = Column(String(100))
     
-    # Indexes
     __table_args__ = (
-        Index('idx_transaction_id', 'transaction_id'),
-        Index('idx_transaction_status', 'status'),
-        Index('idx_transaction_type', 'transaction_type'),
+        Index('idx_report_status_time', 'status', 'reported_at'),
     )
 
-# Fraud detection log
-class FraudDetectionLog(BaseModel):
-    __tablename__ = "fraud_detection_logs"
+class FraudDetectionStats(Base):
+    """
+    Aggregated statistics for fraud detection performance
+    """
+    __tablename__ = "fraud_detection_stats"
     
-    # Detection details
-    campaign_id = Column(Integer, ForeignKey("campaigns.id"), nullable=False)
-    fraud_score = Column(Numeric(3, 2), nullable=False)
-    risk_level = Column(String(20), nullable=False)  # low, medium, high
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     
-    # Detection results
-    detection_result = Column(JSONB, nullable=True)
-    model_version = Column(String(50), nullable=True)
+    # Time period
+    date = Column(DateTime, nullable=False, index=True)
+    period_type = Column(String(20), nullable=False)  # daily, weekly, monthly
     
-    # Action taken
-    action_taken = Column(String(100), nullable=True)
-    reviewed_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    # Overall statistics
+    total_entities = Column(Integer, default=0)
+    fraudulent_entities = Column(Integer, default=0)
+    legitimate_entities = Column(Integer, default=0)
+    fraud_rate = Column(Float, default=0.0)
     
-    # Relationships
-    campaign = relationship("Campaign")
-    reviewer = relationship("User")
+    # Category statistics
+    category_stats = Column(JSON)
+    platform_stats = Column(JSON)
+    risk_level_stats = Column(JSON)
     
-    # Indexes
+    # Performance metrics
+    avg_fraud_score = Column(Float, default=0.0)
+    avg_confidence = Column(Float, default=0.0)
+    processing_time_avg = Column(Float, default=0.0)
+    
+    # Model performance
+    model_version = Column(String(50))
+    accuracy_metrics = Column(JSON)
+    
+    # Metadata
+    created_at = Column(DateTime, default=func.now())
+    
     __table_args__ = (
-        Index('idx_fraud_campaign', 'campaign_id'),
-        Index('idx_fraud_score', 'fraud_score'),
+        Index('idx_stats_date_period', 'date', 'period_type'),
     )
 
-# Translation cache
-class TranslationCache(BaseModel):
-    __tablename__ = "translation_cache"
+# Pydantic Models for API
+
+class FraudEntityBase(BaseModel):
+    """Base model for fraud detection entity"""
+    title: str = Field(..., min_length=1, max_length=500)
+    description: Optional[str] = Field(None, max_length=5000)
+    category: CampaignCategory
+    subcategory: Optional[str] = Field(None, max_length=100)
+    platform: Platform
+    organizer_name: str = Field(..., min_length=1, max_length=200)
+    organizer_type: OrganizerType
+    beneficiary: Optional[str] = Field(None, max_length=200)
+    location_city: Optional[str] = Field(None, max_length=100)
+    location_state: Optional[str] = Field(None, max_length=100)
+    funds_required: float = Field(..., gt=0)
+    funds_raised: Optional[float] = Field(0, ge=0)
+    funding_percentage: Optional[float] = Field(0, ge=0, le=200)
+    campaign_start_date: Optional[datetime] = None
+    campaign_age_days: Optional[int] = Field(0, ge=0)
+
+class FraudEntityCreate(FraudEntityBase):
+    """Model for creating fraud detection entity"""
+    # Verification features
+    has_government_verification: Optional[bool] = False
+    has_complete_documentation: Optional[bool] = True
+    has_clear_beneficiary: Optional[bool] = True
+    has_contact_info: Optional[bool] = True
+    has_medical_verification: Optional[bool] = False
+    has_regular_updates: Optional[bool] = False
+    has_social_media_presence: Optional[bool] = False
+    has_website: Optional[bool] = False
+    has_media_coverage: Optional[bool] = False
     
-    # Translation details
-    source_text_hash = Column(String(64), nullable=False)  # MD5 hash of source text
-    source_language = Column(String(5), nullable=False)
-    target_language = Column(String(5), nullable=False)
-    translated_text = Column(Text, nullable=False)
+    # Risk indicators
+    is_new_organization: Optional[bool] = False
+    has_unrealistic_goal: Optional[bool] = False
+    has_duplicate_content: Optional[bool] = False
+    limited_social_proof: Optional[bool] = False
+    minimal_updates: Optional[bool] = False
+    unclear_fund_usage: Optional[bool] = False
+    no_previous_campaigns: Optional[bool] = False
     
-    # Quality metrics
-    confidence_score = Column(Numeric(3, 2), nullable=True)
-    model_version = Column(String(50), nullable=True)
+    # Additional features
+    features: Optional[Dict[str, Any]] = None
+
+class FraudEntityResponse(FraudEntityBase):
+    """Model for fraud detection entity response"""
+    id: str
+    is_fraudulent: bool
+    fraud_score: float = Field(..., ge=0, le=1)
+    risk_level: RiskLevel
+    verification_status: VerificationStatus
     
-    # Usage tracking
-    usage_count = Column(Integer, default=1, nullable=False)
-    last_used = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # Verification features
+    has_government_verification: bool
+    has_complete_documentation: bool
+    has_clear_beneficiary: bool
+    has_contact_info: bool
+    has_medical_verification: bool
+    has_regular_updates: bool
+    has_social_media_presence: bool
+    has_website: bool
+    has_media_coverage: bool
     
-    # Indexes
-    __table_args__ = (
-        UniqueConstraint('source_text_hash', 'source_language', 'target_language'),
-        Index('idx_translation_hash', 'source_text_hash'),
-        Index('idx_translation_languages', 'source_language', 'target_language'),
+    # Risk indicators
+    is_new_organization: bool
+    has_unrealistic_goal: bool
+    has_duplicate_content: bool
+    limited_social_proof: bool
+    minimal_updates: bool
+    unclear_fund_usage: bool
+    no_previous_campaigns: bool
+    
+    # Additional data
+    features: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+    last_analyzed: Optional[datetime] = None
+    analysis_version: str
+    
+    class Config:
+        from_attributes = True
+
+class FraudAnalysisHistoryResponse(BaseModel):
+    """Model for fraud analysis history response"""
+    id: str
+    entity_id: str
+    fraud_score: float
+    confidence: float
+    risk_level: RiskLevel
+    analysis_method: Optional[str] = None
+    model_version: Optional[str] = None
+    explanation: Optional[Dict[str, Any]] = None
+    recommendations: Optional[List[str]] = None
+    analyzed_at: datetime
+    analyzer_id: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class FraudReportCreate(BaseModel):
+    """Model for creating fraud report"""
+    entity_id: str
+    fraud_type: str = Field(..., min_length=1, max_length=100)
+    evidence: Optional[str] = Field(None, max_length=5000)
+    reporter_info: Optional[Dict[str, Any]] = None
+
+class FraudReportResponse(BaseModel):
+    """Model for fraud report response"""
+    id: str
+    entity_id: str
+    fraud_type: str
+    evidence: Optional[str] = None
+    reporter_info: Optional[Dict[str, Any]] = None
+    status: FraudReportStatus
+    investigation_notes: Optional[str] = None
+    resolution: Optional[str] = None
+    reported_at: datetime
+    investigated_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    investigator_id: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class FraudStatsResponse(BaseModel):
+    """Model for fraud detection statistics response"""
+    id: str
+    date: datetime
+    period_type: str
+    total_entities: int
+    fraudulent_entities: int
+    legitimate_entities: int
+    fraud_rate: float
+    category_stats: Optional[Dict[str, Any]] = None
+    platform_stats: Optional[Dict[str, Any]] = None
+    risk_level_stats: Optional[Dict[str, Any]] = None
+    avg_fraud_score: float
+    avg_confidence: float
+    processing_time_avg: float
+    model_version: Optional[str] = None
+    accuracy_metrics: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+class DatabaseSummary(BaseModel):
+    """Model for database summary"""
+    total_entities: int
+    fraudulent_entities: int
+    legitimate_entities: int
+    fraud_rate: float
+    categories: Dict[str, Any]
+    platforms: Dict[str, Any]
+    risk_levels: Dict[str, Any]
+    verification_status: Dict[str, Any]
+    recent_activity: Dict[str, Any]
+    model_performance: Dict[str, Any]
+
+# Utility functions for model operations
+
+def create_fraud_entity_from_dict(data: Dict[str, Any]) -> FraudDetectionEntity:
+    """Create FraudDetectionEntity from dictionary data"""
+    
+    # Parse features if it's a JSON string
+    features = data.get('features')
+    if isinstance(features, str):
+        try:
+            features = json.loads(features)
+        except json.JSONDecodeError:
+            features = {}
+    
+    # Extract boolean features from features dict
+    boolean_features = {}
+    if isinstance(features, dict):
+        boolean_feature_names = [
+            'has_government_verification', 'has_complete_documentation',
+            'has_clear_beneficiary', 'has_contact_info', 'has_medical_verification',
+            'has_regular_updates', 'has_social_media_presence', 'has_website',
+            'has_media_coverage', 'is_new_organization', 'has_unrealistic_goal',
+            'has_duplicate_content', 'limited_social_proof', 'minimal_updates',
+            'unclear_fund_usage', 'no_previous_campaigns'
+        ]
+        
+        for feature_name in boolean_feature_names:
+            boolean_features[feature_name] = features.get(feature_name, False)
+    
+    # Create entity
+    entity = FraudDetectionEntity(
+        id=data.get('id', str(uuid.uuid4())),
+        title=data.get('title', ''),
+        description=data.get('description'),
+        category=CampaignCategory(data.get('category', 'Unknown')),
+        subcategory=data.get('subcategory'),
+        platform=Platform(data.get('platform', 'Unknown')),
+        organizer_name=data.get('organizer_name', ''),
+        organizer_type=OrganizerType(data.get('organizer_type', 'individual')),
+        beneficiary=data.get('beneficiary'),
+        location_city=data.get('location_city'),
+        location_state=data.get('location_state'),
+        funds_required=float(data.get('funds_required', 0)),
+        funds_raised=float(data.get('funds_raised', 0)),
+        funding_percentage=float(data.get('funding_percentage', 0)),
+        campaign_age_days=int(data.get('campaign_age_days', 0)),
+        is_fraudulent=bool(data.get('is_fraudulent', False)),
+        fraud_score=float(data.get('fraud_score', 0.0)),
+        risk_level=RiskLevel(data.get('risk_level', 'medium')),
+        verification_status=VerificationStatus(data.get('verification_status', 'pending')),
+        features=features,
+        **boolean_features
     )
+    
+    # Parse campaign start date
+    if 'campaign_start_date' in data and data['campaign_start_date']:
+        try:
+            if isinstance(data['campaign_start_date'], str):
+                entity.campaign_start_date = datetime.strptime(data['campaign_start_date'], '%Y-%m-%d')
+            elif isinstance(data['campaign_start_date'], datetime):
+                entity.campaign_start_date = data['campaign_start_date']
+        except ValueError:
+            pass
+    
+    return entity
+
+def entity_to_dict(entity: FraudDetectionEntity) -> Dict[str, Any]:
+    """Convert FraudDetectionEntity to dictionary"""
+    return {
+        'id': entity.id,
+        'title': entity.title,
+        'description': entity.description,
+        'category': entity.category.value if entity.category else None,
+        'subcategory': entity.subcategory,
+        'platform': entity.platform.value if entity.platform else None,
+        'organizer_name': entity.organizer_name,
+        'organizer_type': entity.organizer_type.value if entity.organizer_type else None,
+        'beneficiary': entity.beneficiary,
+        'location_city': entity.location_city,
+        'location_state': entity.location_state,
+        'funds_required': entity.funds_required,
+        'funds_raised': entity.funds_raised,
+        'funding_percentage': entity.funding_percentage,
+        'campaign_start_date': entity.campaign_start_date.isoformat() if entity.campaign_start_date else None,
+        'campaign_age_days': entity.campaign_age_days,
+        'is_fraudulent': entity.is_fraudulent,
+        'fraud_score': entity.fraud_score,
+        'risk_level': entity.risk_level.value if entity.risk_level else None,
+        'verification_status': entity.verification_status.value if entity.verification_status else None,
+        'has_government_verification': entity.has_government_verification,
+        'has_complete_documentation': entity.has_complete_documentation,
+        'has_clear_beneficiary': entity.has_clear_beneficiary,
+        'has_contact_info': entity.has_contact_info,
+        'has_medical_verification': entity.has_medical_verification,
+        'has_regular_updates': entity.has_regular_updates,
+        'has_social_media_presence': entity.has_social_media_presence,
+        'has_website': entity.has_website,
+        'has_media_coverage': entity.has_media_coverage,
+        'is_new_organization': entity.is_new_organization,
+        'has_unrealistic_goal': entity.has_unrealistic_goal,
+        'has_duplicate_content': entity.has_duplicate_content,
+        'limited_social_proof': entity.limited_social_proof,
+        'minimal_updates': entity.minimal_updates,
+        'unclear_fund_usage': entity.unclear_fund_usage,
+        'no_previous_campaigns': entity.no_previous_campaigns,
+        'features': entity.features,
+        'created_at': entity.created_at.isoformat() if entity.created_at else None,
+        'updated_at': entity.updated_at.isoformat() if entity.updated_at else None,
+        'last_analyzed': entity.last_analyzed.isoformat() if entity.last_analyzed else None,
+        'analysis_version': entity.analysis_version
+    }
 
