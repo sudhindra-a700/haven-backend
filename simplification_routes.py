@@ -1,439 +1,531 @@
 """
-Text Simplification API Routes for HAVEN Crowdfunding Platform
-RESTful endpoints for text simplification services
+Algolia Search Service for HAVEN Crowdfunding Platform
+Handles search indexing and querying for campaigns and users
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+import json
+from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends, Request, status
-from pydantic import BaseModel, validator
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+from dataclasses import dataclass, asdict
 
-from simplification_service_smart import simplification_service as get_simplification_service
-from simplification_service_smart import simplification_service
-from auth_middleware import get_current_user
-from models import User
+# Fix for algoliasearch v4+ API
+try:
+    from algoliasearch.search.client import SearchClient
+except ImportError:
+    try:
+        # Fallback for different algoliasearch versions
+        from algoliasearch import SearchClient
+    except ImportError:
+        # Create a mock SearchClient for development
+        class SearchClient:
+            def __init__(self, app_id, api_key):
+                self.app_id = app_id
+                self.api_key = api_key
+                
+            def init_index(self, index_name):
+                return MockIndex(index_name)
+                
+        class MockIndex:
+            def __init__(self, name):
+                self.name = name
+                
+            def save_objects(self, objects):
+                return {"objectIDs": [f"mock_{i}" for i in range(len(objects))]}
+                
+            def search(self, query, params=None):
+                return {"hits": [], "nbHits": 0}
+                
+            def delete_object(self, object_id):
+                return {"deletedAt": "mock_time"}
 
 logger = logging.getLogger(__name__)
 
-# Rate limiter
-limiter = Limiter(key_func=get_remote_address)
+@dataclass
+class SearchableItem:
+    """Base class for searchable items"""
+    objectID: str
+    title: str
+    description: str
+    category: str
+    created_at: str
+    updated_at: str
 
-# Create router
-simplification_router = APIRouter()
+@dataclass
+class CampaignSearchItem(SearchableItem):
+    """Campaign search item"""
+    creator_name: str
+    creator_id: int
+    goal_amount: float
+    current_amount: float
+    status: str
+    location: str
+    tags: List[str]
+    image_url: Optional[str] = None
+    short_description: Optional[str] = None
+    organization_name: Optional[str] = None
+    progress_percentage: float = 0.0
+    supporters_count: int = 0
+    days_remaining: Optional[int] = None
 
-# Pydantic models
-class SimplificationRequest(BaseModel):
-    text: str
-    preserve_formatting: bool = True
-    max_sentence_length: int = 20
+@dataclass
+class UserSearchItem(SearchableItem):
+    """User search item"""
+    full_name: str
+    email: str
+    role: str
+    location: Optional[str] = None
+    bio: Optional[str] = None
+    campaigns_created: int = 0
+    total_donated: float = 0.0
+    profile_image_url: Optional[str] = None
+
+class AlgoliaService:
+    """
+    Algolia search service for indexing and searching campaigns and users
+    """
     
-    @validator('text')
-    def validate_text(cls, v):
-        if not v or not v.strip():
-            raise ValueError("Text cannot be empty")
-        if len(v) > 10000:
-            raise ValueError("Text too long (max 10000 characters)")
-        return v.strip()
+    def __init__(self, app_id: str, api_key: str, admin_api_key: str):
+        self.app_id = app_id
+        self.api_key = api_key
+        self.admin_api_key = admin_api_key
+        
+        # Initialize Algolia client
+        self.client = SearchClient.create(app_id, admin_api_key)
+        
+        # Define index names
+        self.campaigns_index_name = "campaigns"
+        self.users_index_name = "users"
+        
+        # Get index references
+        self.campaigns_index = self.client.init_index(self.campaigns_index_name)
+        self.users_index = self.client.init_index(self.users_index_name)
+        
+        # Configure indices
+        self._configure_indices()
+        
+        logger.info("AlgoliaService initialized")
     
-    @validator('max_sentence_length')
-    def validate_max_sentence_length(cls, v):
-        if v < 5 or v > 50:
-            raise ValueError("Max sentence length must be between 5 and 50")
-        return v
-
-class BatchSimplificationRequest(BaseModel):
-    texts: List[str]
-    preserve_formatting: bool = True
-    max_sentence_length: int = 20
+    def _configure_indices(self):
+        """Configure Algolia indices with proper settings"""
+        try:
+            # Configure campaigns index
+            campaigns_settings = {
+                'searchableAttributes': [
+                    'title',
+                    'description',
+                    'short_description',
+                    'creator_name',
+                    'organization_name',
+                    'category',
+                    'location',
+                    'tags'
+                ],
+                'attributesForFaceting': [
+                    'category',
+                    'status',
+                    'location',
+                    'creator_name',
+                    'tags'
+                ],
+                'customRanking': [
+                    'desc(current_amount)',
+                    'desc(supporters_count)',
+                    'desc(progress_percentage)'
+                ],
+                'ranking': [
+                    'typo',
+                    'geo',
+                    'words',
+                    'filters',
+                    'proximity',
+                    'attribute',
+                    'exact',
+                    'custom'
+                ],
+                'attributesToHighlight': [
+                    'title',
+                    'description',
+                    'creator_name'
+                ],
+                'attributesToSnippet': [
+                    'description:20'
+                ],
+                'hitsPerPage': 20,
+                'maxValuesPerFacet': 100
+            }
+            
+            self.campaigns_index.set_settings(campaigns_settings)
+            
+            # Configure users index
+            users_settings = {
+                'searchableAttributes': [
+                    'full_name',
+                    'bio',
+                    'location',
+                    'title'
+                ],
+                'attributesForFaceting': [
+                    'role',
+                    'location'
+                ],
+                'customRanking': [
+                    'desc(campaigns_created)',
+                    'desc(total_donated)'
+                ],
+                'attributesToHighlight': [
+                    'full_name',
+                    'bio'
+                ],
+                'hitsPerPage': 20
+            }
+            
+            self.users_index.set_settings(users_settings)
+            
+            logger.info("Algolia indices configured successfully")
+            
+        except Exception as e:
+            logger.error(f"Error configuring Algolia indices: {e}")
     
-    @validator('texts')
-    def validate_texts(cls, v):
-        if not v:
-            raise ValueError("Texts list cannot be empty")
-        if len(v) > 20:
-            raise ValueError("Too many texts (max 20)")
-        for text in v:
-            if len(text) > 5000:
-                raise ValueError("Individual text too long (max 5000 characters)")
-        return v
-
-class TermExplanationRequest(BaseModel):
-    term: str
+    def index_campaign(self, campaign_data: Dict[str, Any]) -> bool:
+        """
+        Index a campaign in Algolia
+        """
+        try:
+            # Create searchable campaign item
+            search_item = CampaignSearchItem(
+                objectID=str(campaign_data['id']),
+                title=campaign_data['title'],
+                description=campaign_data['description'],
+                short_description=campaign_data.get('short_description', ''),
+                category=campaign_data['category'],
+                creator_name=campaign_data.get('creator', {}).get('full_name', ''),
+                creator_id=campaign_data.get('creator_id', 0),
+                goal_amount=float(campaign_data.get('goal_amount', 0)),
+                current_amount=float(campaign_data.get('current_amount', 0)),
+                status=campaign_data.get('status', 'draft'),
+                location=campaign_data.get('location', ''),
+                organization_name=campaign_data.get('organization_name', ''),
+                image_url=campaign_data.get('image_url', ''),
+                tags=campaign_data.get('tags', []),
+                progress_percentage=min(100, (campaign_data.get('current_amount', 0) / max(1, campaign_data.get('goal_amount', 1))) * 100),
+                supporters_count=campaign_data.get('supporters_count', 0),
+                days_remaining=campaign_data.get('days_remaining'),
+                created_at=campaign_data.get('created_at', datetime.now().isoformat()),
+                updated_at=campaign_data.get('updated_at', datetime.now().isoformat())
+            )
+            
+            # Index the campaign
+            self.campaigns_index.save_object(asdict(search_item))
+            
+            logger.info(f"Campaign indexed successfully: {campaign_data['id']}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error indexing campaign {campaign_data.get('id')}: {e}")
+            return False
     
-    @validator('term')
-    def validate_term(cls, v):
-        if not v or not v.strip():
-            raise ValueError("Term cannot be empty")
-        if len(v) > 100:
-            raise ValueError("Term too long (max 100 characters)")
-        return v.strip()
-
-class SimplificationResponse(BaseModel):
-    original_text: str
-    simplified_text: str
-    simplifications: List[Dict[str, str]]
-    confidence_score: float
-    processing_time: float
-    method: str
-
-class BatchSimplificationResponse(BaseModel):
-    results: List[SimplificationResponse]
-    total_processing_time: float
-    success_count: int
-    error_count: int
-
-class TermExplanationResponse(BaseModel):
-    term: str
-    explanation: Optional[str]
-    category: Optional[str]
-    found: bool
-
-class SuggestionsResponse(BaseModel):
-    suggestions: List[Dict[str, str]]
-    total_count: int
-
-class CategoriesResponse(BaseModel):
-    categories: List[str]
-    total_count: int
-
-# Simplification endpoints
-@simplification_router.post("/simplify", response_model=SimplificationResponse)
-@limiter.limit("30/minute")
-async def simplify_text(
-    request: Request,
-    simplification_request: SimplificationRequest,
-    current_user: User = Depends(get_current_user)
-):
-    """Simplify text to make it easier to understand"""
-    try:
-        service = get_simplification_service()
-        
-        result = service.simplify_text(
-            text=simplification_request.text,
-            preserve_formatting=simplification_request.preserve_formatting,
-            max_sentence_length=simplification_request.max_sentence_length
-        )
-        
-        logger.info(f"Text simplification completed for user {current_user.id}: {len(result.simplifications)} terms simplified")
-        
-        return SimplificationResponse(
-            original_text=result.original_text,
-            simplified_text=result.simplified_text,
-            simplifications=result.simplifications,
-            confidence_score=result.confidence_score,
-            processing_time=result.processing_time,
-            method=result.method
-        )
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Simplification error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Simplification service temporarily unavailable"
-        )
-
-@simplification_router.post("/simplify/batch", response_model=BatchSimplificationResponse)
-@limiter.limit("10/minute")
-async def simplify_batch(
-    request: Request,
-    batch_request: BatchSimplificationRequest,
-    current_user: User = Depends(get_current_user)
-):
-    """Simplify multiple texts in batch"""
-    try:
-        service = get_simplification_service()
-        
-        results = []
-        error_count = 0
-        total_start_time = datetime.now()
-        
-        for text in batch_request.texts:
-            try:
-                result = service.simplify_text(
-                    text=text,
-                    preserve_formatting=batch_request.preserve_formatting,
-                    max_sentence_length=batch_request.max_sentence_length
+    def index_user(self, user_data: Dict[str, Any]) -> bool:
+        """
+        Index a user in Algolia
+        """
+        try:
+            # Create searchable user item
+            search_item = UserSearchItem(
+                objectID=str(user_data['id']),
+                title=user_data.get('full_name', ''),
+                description=user_data.get('bio', ''),
+                category='user',
+                full_name=user_data['full_name'],
+                email=user_data['email'],
+                role=user_data.get('role', 'user'),
+                location=user_data.get('location', ''),
+                bio=user_data.get('bio', ''),
+                campaigns_created=user_data.get('campaigns_created', 0),
+                total_donated=float(user_data.get('total_donated', 0)),
+                profile_image_url=user_data.get('profile_image_url', ''),
+                created_at=user_data.get('created_at', datetime.now().isoformat()),
+                updated_at=user_data.get('updated_at', datetime.now().isoformat())
+            )
+            
+            # Index the user
+            self.users_index.save_object(asdict(search_item))
+            
+            logger.info(f"User indexed successfully: {user_data['id']}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error indexing user {user_data.get('id')}: {e}")
+            return False
+    
+    def search_campaigns(self, query: str, filters: Optional[Dict[str, Any]] = None, 
+                        page: int = 0, hits_per_page: int = 20) -> Dict[str, Any]:
+        """
+        Search campaigns in Algolia
+        """
+        try:
+            search_params = {
+                'query': query,
+                'page': page,
+                'hitsPerPage': hits_per_page
+            }
+            
+            # Add filters if provided
+            if filters:
+                filter_strings = []
+                
+                if 'category' in filters:
+                    filter_strings.append(f"category:{filters['category']}")
+                
+                if 'status' in filters:
+                    filter_strings.append(f"status:{filters['status']}")
+                
+                if 'location' in filters:
+                    filter_strings.append(f"location:{filters['location']}")
+                
+                if 'min_amount' in filters:
+                    filter_strings.append(f"current_amount >= {filters['min_amount']}")
+                
+                if 'max_amount' in filters:
+                    filter_strings.append(f"current_amount <= {filters['max_amount']}")
+                
+                if filter_strings:
+                    search_params['filters'] = ' AND '.join(filter_strings)
+            
+            # Perform search
+            results = self.campaigns_index.search('', search_params)
+            
+            return {
+                'hits': results['hits'],
+                'total_hits': results['nbHits'],
+                'page': results['page'],
+                'total_pages': results['nbPages'],
+                'hits_per_page': results['hitsPerPage'],
+                'processing_time': results['processingTimeMS']
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching campaigns: {e}")
+            return {
+                'hits': [],
+                'total_hits': 0,
+                'page': 0,
+                'total_pages': 0,
+                'hits_per_page': hits_per_page,
+                'processing_time': 0,
+                'error': str(e)
+            }
+    
+    def search_users(self, query: str, filters: Optional[Dict[str, Any]] = None,
+                    page: int = 0, hits_per_page: int = 20) -> Dict[str, Any]:
+        """
+        Search users in Algolia
+        """
+        try:
+            search_params = {
+                'query': query,
+                'page': page,
+                'hitsPerPage': hits_per_page
+            }
+            
+            # Add filters if provided
+            if filters:
+                filter_strings = []
+                
+                if 'role' in filters:
+                    filter_strings.append(f"role:{filters['role']}")
+                
+                if 'location' in filters:
+                    filter_strings.append(f"location:{filters['location']}")
+                
+                if filter_strings:
+                    search_params['filters'] = ' AND '.join(filter_strings)
+            
+            # Perform search
+            results = self.users_index.search('', search_params)
+            
+            return {
+                'hits': results['hits'],
+                'total_hits': results['nbHits'],
+                'page': results['page'],
+                'total_pages': results['nbPages'],
+                'hits_per_page': results['hitsPerPage'],
+                'processing_time': results['processingTimeMS']
+            }
+            
+        except Exception as e:
+            logger.error(f"Error searching users: {e}")
+            return {
+                'hits': [],
+                'total_hits': 0,
+                'page': 0,
+                'total_pages': 0,
+                'hits_per_page': hits_per_page,
+                'processing_time': 0,
+                'error': str(e)
+            }
+    
+    def get_search_suggestions(self, query: str, index_type: str = 'campaigns') -> List[str]:
+        """
+        Get search suggestions based on query
+        """
+        try:
+            index = self.campaigns_index if index_type == 'campaigns' else self.users_index
+            
+            results = index.search(query, {
+                'hitsPerPage': 5,
+                'attributesToRetrieve': ['title', 'full_name'] if index_type == 'users' else ['title']
+            })
+            
+            suggestions = []
+            for hit in results['hits']:
+                if index_type == 'campaigns':
+                    suggestions.append(hit.get('title', ''))
+                else:
+                    suggestions.append(hit.get('full_name', ''))
+            
+            return suggestions
+            
+        except Exception as e:
+            logger.error(f"Error getting search suggestions: {e}")
+            return []
+    
+    def delete_campaign(self, campaign_id: str) -> bool:
+        """
+        Delete campaign from Algolia index
+        """
+        try:
+            self.campaigns_index.delete_object(campaign_id)
+            logger.info(f"Campaign deleted from index: {campaign_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting campaign from index: {e}")
+            return False
+    
+    def delete_user(self, user_id: str) -> bool:
+        """
+        Delete user from Algolia index
+        """
+        try:
+            self.users_index.delete_object(user_id)
+            logger.info(f"User deleted from index: {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting user from index: {e}")
+            return False
+    
+    def batch_index_campaigns(self, campaigns: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Batch index multiple campaigns
+        """
+        try:
+            search_items = []
+            
+            for campaign_data in campaigns:
+                search_item = CampaignSearchItem(
+                    objectID=str(campaign_data['id']),
+                    title=campaign_data['title'],
+                    description=campaign_data['description'],
+                    short_description=campaign_data.get('short_description', ''),
+                    category=campaign_data['category'],
+                    creator_name=campaign_data.get('creator', {}).get('full_name', ''),
+                    creator_id=campaign_data.get('creator_id', 0),
+                    goal_amount=float(campaign_data.get('goal_amount', 0)),
+                    current_amount=float(campaign_data.get('current_amount', 0)),
+                    status=campaign_data.get('status', 'draft'),
+                    location=campaign_data.get('location', ''),
+                    organization_name=campaign_data.get('organization_name', ''),
+                    image_url=campaign_data.get('image_url', ''),
+                    tags=campaign_data.get('tags', []),
+                    progress_percentage=min(100, (campaign_data.get('current_amount', 0) / max(1, campaign_data.get('goal_amount', 1))) * 100),
+                    supporters_count=campaign_data.get('supporters_count', 0),
+                    days_remaining=campaign_data.get('days_remaining'),
+                    created_at=campaign_data.get('created_at', datetime.now().isoformat()),
+                    updated_at=campaign_data.get('updated_at', datetime.now().isoformat())
                 )
+                search_items.append(asdict(search_item))
+            
+            # Batch index
+            response = self.campaigns_index.save_objects(search_items)
+            
+            logger.info(f"Batch indexed {len(campaigns)} campaigns")
+            return {
+                'success': True,
+                'indexed_count': len(campaigns),
+                'task_id': response.get('taskID')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error batch indexing campaigns: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'indexed_count': 0
+            }
+    
+    def get_popular_searches(self, index_type: str = 'campaigns') -> List[Dict[str, Any]]:
+        """
+        Get popular search terms (mock implementation)
+        """
+        try:
+            # This is a mock implementation since Algolia Analytics API requires separate setup
+            if index_type == 'campaigns':
+                return [
+                    {'query': 'education', 'count': 150},
+                    {'query': 'healthcare', 'count': 120},
+                    {'query': 'emergency', 'count': 100},
+                    {'query': 'environment', 'count': 80},
+                    {'query': 'community', 'count': 75}
+                ]
+            else:
+                return [
+                    {'query': 'fundraiser', 'count': 50},
+                    {'query': 'volunteer', 'count': 40},
+                    {'query': 'organizer', 'count': 30}
+                ]
                 
-                results.append(SimplificationResponse(
-                    original_text=result.original_text,
-                    simplified_text=result.simplified_text,
-                    simplifications=result.simplifications,
-                    confidence_score=result.confidence_score,
-                    processing_time=result.processing_time,
-                    method=result.method
-                ))
-                
-            except Exception as e:
-                logger.warning(f"Batch simplification error for text: {e}")
-                error_count += 1
-                # Add error placeholder
-                results.append(SimplificationResponse(
-                    original_text=text,
-                    simplified_text=text,  # Return original text
-                    simplifications=[],
-                    confidence_score=0.0,
-                    processing_time=0.0,
-                    method="error"
-                ))
-        
-        total_processing_time = (datetime.now() - total_start_time).total_seconds()
-        
-        logger.info(f"Batch simplification completed for user {current_user.id}: {len(results)} texts")
-        
-        return BatchSimplificationResponse(
-            results=results,
-            total_processing_time=total_processing_time,
-            success_count=len(results) - error_count,
-            error_count=error_count
-        )
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Batch simplification error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Batch simplification service temporarily unavailable"
-        )
-
-@simplification_router.post("/explain-term", response_model=TermExplanationResponse)
-@limiter.limit("60/minute")
-async def explain_term(
-    request: Request,
-    term_request: TermExplanationRequest,
-    current_user: User = Depends(get_current_user)
-):
-    """Get explanation for a specific term"""
-    try:
-        service = get_simplification_service()
-        
-        explanation = service.get_term_explanation(term_request.term)
-        found = explanation is not None
-        
-        # Get category if explanation found
-        category = None
-        if found:
-            category = service._get_term_category(term_request.term.lower())
-        
-        logger.info(f"Term explanation requested for user {current_user.id}: {term_request.term} ({'found' if found else 'not found'})")
-        
-        return TermExplanationResponse(
-            term=term_request.term,
-            explanation=explanation,
-            category=category,
-            found=found
-        )
-        
-    except Exception as e:
-        logger.error(f"Term explanation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Term explanation service temporarily unavailable"
-        )
-
-@simplification_router.post("/suggestions", response_model=SuggestionsResponse)
-@limiter.limit("30/minute")
-async def get_simplification_suggestions(
-    request: Request,
-    simplification_request: SimplificationRequest,
-    limit: int = 10,
-    current_user: User = Depends(get_current_user)
-):
-    """Get simplification suggestions for text"""
-    try:
-        service = get_simplification_service()
-        
-        suggestions = service.get_simplification_suggestions(
-            text=simplification_request.text,
-            limit=limit
-        )
-        
-        logger.info(f"Simplification suggestions provided for user {current_user.id}: {len(suggestions)} suggestions")
-        
-        return SuggestionsResponse(
-            suggestions=suggestions,
-            total_count=len(suggestions)
-        )
-        
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-    except Exception as e:
-        logger.error(f"Suggestions error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Suggestions service temporarily unavailable"
-        )
-
-@simplification_router.get("/categories", response_model=CategoriesResponse)
-@limiter.limit("100/minute")
-async def get_supported_categories(request: Request):
-    """Get list of supported simplification categories"""
-    try:
-        service = get_simplification_service()
-        categories = service.get_supported_categories()
-        
-        return CategoriesResponse(
-            categories=categories,
-            total_count=len(categories)
-        )
-        
-    except Exception as e:
-        logger.error(f"Get categories error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to retrieve supported categories"
-        )
-
-# Service management endpoints
-@simplification_router.get("/health")
-@limiter.limit("30/minute")
-async def get_simplification_health(request: Request):
-    """Get simplification service health status"""
-    try:
-        service = get_simplification_service()
-        health_status = service.get_service_health()
-        
-        return {
-            "service": "simplification",
-            "status": health_status["status"],
-            "details": health_status
-        }
-        
-    except Exception as e:
-        logger.error(f"Simplification health check error: {e}")
-        return {
-            "service": "simplification",
-            "status": "unhealthy",
-            "error": str(e)
-        }
-
-# Campaign-specific simplification endpoints
-@simplification_router.post("/campaign/{campaign_id}/simplify")
-@limiter.limit("20/minute")
-async def simplify_campaign_content(
-    request: Request,
-    campaign_id: int,
-    current_user: User = Depends(get_current_user)
-):
-    """Simplify campaign content (title, description)"""
-    try:
-        from database import get_db
-        from models import Campaign
-        
-        # Get campaign
-        db = next(get_db())
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-        
-        if not campaign:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Campaign not found"
-            )
-        
-        # Check permissions (campaign creator or admin)
-        if campaign.creator_id != current_user.id and current_user.role.value != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permission denied"
-            )
-        
-        service = get_simplification_service()
-        
-        # Simplify campaign content
-        simplifications = {}
-        
-        if campaign.title:
-            title_result = service.simplify_text(campaign.title)
-            simplifications["title"] = {
-                "original": title_result.original_text,
-                "simplified": title_result.simplified_text,
-                "terms_simplified": len(title_result.simplifications)
+        except Exception as e:
+            logger.error(f"Error getting popular searches: {e}")
+            return []
+    
+    def get_service_health(self) -> Dict[str, Any]:
+        """
+        Check Algolia service health
+        """
+        try:
+            # Test API connectivity by getting index settings
+            self.campaigns_index.get_settings()
+            
+            return {
+                "status": "healthy",
+                "api_accessible": True,
+                "app_id": self.app_id,
+                "indices": {
+                    "campaigns": self.campaigns_index_name,
+                    "users": self.users_index_name
+                },
+                "timestamp": datetime.now().isoformat()
             }
-        
-        if campaign.description:
-            desc_result = service.simplify_text(campaign.description)
-            simplifications["description"] = {
-                "original": desc_result.original_text,
-                "simplified": desc_result.simplified_text,
-                "terms_simplified": len(desc_result.simplifications)
+            
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "api_accessible": False,
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
             }
-        
-        if campaign.short_description:
-            short_desc_result = service.simplify_text(campaign.short_description)
-            simplifications["short_description"] = {
-                "original": short_desc_result.original_text,
-                "simplified": short_desc_result.simplified_text,
-                "terms_simplified": len(short_desc_result.simplifications)
-            }
-        
-        logger.info(f"Campaign {campaign_id} content simplified for user {current_user.id}")
-        
-        return {
-            "campaign_id": campaign_id,
-            "simplifications": simplifications,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Campaign simplification error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Campaign simplification failed"
-        )
 
-# Analytics endpoints
-@simplification_router.get("/analytics/usage")
-@limiter.limit("10/minute")
-async def get_simplification_analytics(
-    request: Request,
-    current_user: User = Depends(get_current_user)
-):
-    """Get simplification usage analytics (admin only)"""
-    try:
-        if current_user.role.value != "admin":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Admin access required"
-            )
-        
-        # TODO: Implement analytics tracking
-        # For now, return mock data
-        return {
-            "total_simplifications": 1250,
-            "unique_users": 85,
-            "most_simplified_categories": [
-                {"category": "financial", "count": 450},
-                {"category": "legal", "count": 320},
-                {"category": "technical", "count": 280},
-                {"category": "medical", "count": 200}
-            ],
-            "average_confidence_score": 0.78,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Simplification analytics error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unable to retrieve simplification analytics"
-        )
+# Global service instance
+_algolia_service = None
+
+def get_algolia_service(app_id: str = None, api_key: str = None, admin_api_key: str = None) -> AlgoliaService:
+    """Get global Algolia service instance"""
+    global _algolia_service
+    
+    if _algolia_service is None and app_id and api_key and admin_api_key:
+        _algolia_service = AlgoliaService(app_id, api_key, admin_api_key)
+    
+    return _algolia_service
 
