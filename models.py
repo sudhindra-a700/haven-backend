@@ -1,12 +1,13 @@
 """
 Enhanced Database Models for HAVEN Platform
-Updated to support the expanded fraud detection database with multi-category support
+Updated to support separate individual and organization registration with role-based access control
 """
 
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, JSON, Enum as SQLEnum, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, Text, JSON, Enum as SQLEnum, Index, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from pydantic import BaseModel, Field, validator
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
@@ -62,15 +63,273 @@ class FraudReportStatus(str, Enum):
     RESOLVED = "resolved"
     DISMISSED = "dismissed"
 
-# User Management Models
+# Modified User Management Models with Role-Based Access Control
 
 class UserRole(str, Enum):
     """User roles for authentication and authorization"""
-    USER = "user"
-    ADMIN = "admin"
-    MODERATOR = "moderator"
+    INDIVIDUAL = "individual"      # Can only donate
+    ORGANIZATION = "organization"  # Can only create campaigns
+    ADMIN = "admin"               # Full access
+    MODERATOR = "moderator"       # Moderation access
 
-# SQLAlchemy Models
+class CampaignStatus(str, Enum):
+    DRAFT = "draft"
+    PENDING = "pending"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    UNDER_REVIEW = "under_review"
+
+# New Registration Tables
+
+class IndividualRegistration(Base):
+    """Registration table for individual users who can only donate"""
+    __tablename__ = "individual_registrations"
+    
+    # Primary key
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Personal Information
+    full_name = Column(String(255), nullable=False)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    phone_number = Column(String(20), nullable=True)
+    date_of_birth = Column(DateTime, nullable=True)
+    
+    # Address Information
+    address_line1 = Column(String(255), nullable=True)
+    address_line2 = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=True)
+    state = Column(String(100), nullable=True)
+    postal_code = Column(String(20), nullable=True)
+    country = Column(String(100), nullable=True)
+    
+    # Identity Verification
+    id_type = Column(String(50), nullable=True)  # "aadhar", "pan", "passport", etc.
+    id_number = Column(String(100), nullable=True)
+    id_document_url = Column(String(500), nullable=True)
+    
+    # Account Status
+    is_verified = Column(Boolean, default=False, nullable=False)
+    verification_status = Column(SQLEnum(VerificationStatus), default=VerificationStatus.PENDING)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Relationship to User table
+    user_id = Column(String, ForeignKey("users.id"), unique=True, nullable=True)
+    user = relationship("User", back_populates="individual_registration")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_individual_email', 'email'),
+        Index('idx_individual_verification', 'verification_status'),
+        Index('idx_individual_created', 'created_at'),
+    )
+
+class OrganizationRegistration(Base):
+    """Registration table for organizations who can only create campaigns"""
+    __tablename__ = "organization_registrations"
+    
+    # Primary key
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Organization Information
+    organization_name = Column(String(255), nullable=False)
+    organization_type = Column(SQLEnum(OrganizerType), nullable=False)  # NGO, ORGANIZATION, GOVERNMENT
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    phone_number = Column(String(20), nullable=True)
+    website = Column(String(255), nullable=True)
+    
+    # Address Information
+    address_line1 = Column(String(255), nullable=False)
+    address_line2 = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=False)
+    state = Column(String(100), nullable=False)
+    postal_code = Column(String(20), nullable=False)
+    country = Column(String(100), nullable=False)
+    
+    # Legal Information
+    registration_number = Column(String(100), nullable=True)
+    tax_id = Column(String(100), nullable=True)
+    fcra_number = Column(String(100), nullable=True)  # For NGOs
+    ngo_garpan_id = Column(String(100), nullable=True)  # For NGOs
+    
+    # Documents
+    registration_certificate_url = Column(String(500), nullable=True)
+    tax_exemption_certificate_url = Column(String(500), nullable=True)
+    fcra_certificate_url = Column(String(500), nullable=True)
+    
+    # Contact Person
+    contact_person_name = Column(String(255), nullable=False)
+    contact_person_designation = Column(String(100), nullable=True)
+    contact_person_phone = Column(String(20), nullable=True)
+    contact_person_email = Column(String(255), nullable=True)
+    
+    # Account Status
+    is_verified = Column(Boolean, default=False, nullable=False)
+    verification_status = Column(SQLEnum(VerificationStatus), default=VerificationStatus.PENDING)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Relationship to User table
+    user_id = Column(String, ForeignKey("users.id"), unique=True, nullable=True)
+    user = relationship("User", back_populates="organization_registration")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_organization_email', 'email'),
+        Index('idx_organization_type', 'organization_type'),
+        Index('idx_organization_verification', 'verification_status'),
+        Index('idx_organization_created', 'created_at'),
+    )
+
+# Modified User Model
+
+class User(Base):
+    """
+    User model for authentication and user management
+    Supports OAuth authentication with Google and Facebook
+    Enhanced with role-based access control and registration validation
+    """
+    __tablename__ = "users"
+    
+    # Primary identification
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    
+    # Profile information
+    full_name = Column(String(255), nullable=True)
+    profile_picture = Column(String(500), nullable=True)
+    
+    # Authentication
+    hashed_password = Column(String(255), nullable=True)  # Nullable for OAuth-only users
+    
+    # OAuth provider IDs
+    google_id = Column(String(255), nullable=True, unique=True)
+    facebook_id = Column(String(255), nullable=True, unique=True)
+    
+    # Account status
+    email_verified = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    
+    # Role and permissions - Modified to use new UserRole enum
+    role = Column(SQLEnum(UserRole), nullable=False)  # INDIVIDUAL, ORGANIZATION, ADMIN, MODERATOR
+    
+    # Registration status - New fields
+    is_registered = Column(Boolean, default=False, nullable=False)
+    registration_completed_at = Column(DateTime, nullable=True)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_login = Column(DateTime, nullable=True)
+    
+    # Additional profile fields
+    phone_number = Column(String(20), nullable=True)
+    date_of_birth = Column(DateTime, nullable=True)
+    location = Column(String(255), nullable=True)
+    bio = Column(Text, nullable=True)
+    
+    # Privacy settings
+    profile_public = Column(Boolean, default=True, nullable=False)
+    email_notifications = Column(Boolean, default=True, nullable=False)
+    
+    # Relationships to registration tables
+    individual_registration = relationship("IndividualRegistration", back_populates="user", uselist=False)
+    organization_registration = relationship("OrganizationRegistration", back_populates="user", uselist=False)
+    
+    # Existing relationships
+    campaigns = relationship("Campaign", back_populates="creator")
+    donations = relationship("Donation", back_populates="donor")
+    
+    # Indexes for performance
+    __table_args__ = (
+        Index('idx_user_email', 'email'),
+        Index('idx_user_google_id', 'google_id'),
+        Index('idx_user_facebook_id', 'facebook_id'),
+        Index('idx_user_created_at', 'created_at'),
+        Index('idx_user_role', 'role'),
+        Index('idx_user_registered', 'is_registered'),
+    )
+
+# Campaign Model (Updated with relationships)
+
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False)
+    short_description = Column(String(500), nullable=True)
+    
+    # Financial information
+    goal_amount = Column(Float, nullable=False)
+    current_amount = Column(Float, default=0.0)
+    currency = Column(String(3), default="INR")
+    
+    # Category and status
+    category = Column(SQLEnum(CampaignCategory), nullable=False)
+    status = Column(SQLEnum(CampaignStatus), default=CampaignStatus.DRAFT)
+    
+    # Media
+    featured_image = Column(String(500), nullable=True)
+    gallery_images = Column(JSON, nullable=True)
+    video_url = Column(String(500), nullable=True)
+    
+    # Timeline
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    
+    # Organization details
+    organization_name = Column(String(255), nullable=True)
+    is_verified = Column(Boolean, default=False)
+    
+    # Fraud detection
+    fraud_score = Column(Float, default=0.0)
+    
+    # Statistics
+    view_count = Column(Integer, default=0)
+    donor_count = Column(Integer, default=0)
+    progress_percentage = Column(Float, default=0.0)
+    
+    # Creator relationship
+    creator_id = Column(String, ForeignKey("users.id"), nullable=False)
+    creator = relationship("User", back_populates="campaigns")
+    
+    # Donations relationship
+    donations = relationship("Donation", back_populates="campaign")
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+# Donation Model (Updated with relationships)
+
+class Donation(Base):
+    __tablename__ = "donations"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    amount = Column(Float, nullable=False)
+    is_anonymous = Column(Boolean, default=False)
+    message = Column(Text, nullable=True)
+    dedication = Column(String(255), nullable=True)
+    tax_receipt_required = Column(Boolean, default=False)
+    
+    # Relationships
+    donor_id = Column(String, ForeignKey("users.id"), nullable=False)
+    campaign_id = Column(String, ForeignKey("campaigns.id"), nullable=False)
+    
+    donor = relationship("User", back_populates="donations")
+    campaign = relationship("Campaign", back_populates="donations")
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now())
+
+# Keep existing fraud detection models unchanged
 
 class FraudDetectionEntity(Base):
     """
@@ -203,60 +462,86 @@ class FraudReport(Base):
     investigated_at = Column(DateTime)
     resolved_at = Column(DateTime)
 
-class User(Base):
-    """
-    User model for authentication and user management
-    Supports OAuth authentication with Google and Facebook
-    """
-    __tablename__ = "users"
-    
-    # Primary identification
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    email = Column(String(255), unique=True, nullable=False, index=True)
-    
-    # Profile information
-    full_name = Column(String(255), nullable=True)
-    profile_picture = Column(String(500), nullable=True)
-    
-    # Authentication
-    hashed_password = Column(String(255), nullable=True)  # Nullable for OAuth-only users
-    
-    # OAuth provider IDs
-    google_id = Column(String(255), nullable=True, unique=True)
-    facebook_id = Column(String(255), nullable=True, unique=True)
-    
-    # Account status
-    email_verified = Column(Boolean, default=False, nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    
-    # Role and permissions
-    role = Column(SQLEnum(UserRole), default=UserRole.USER, nullable=False)
-    
-    # Timestamps
-    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-    last_login = Column(DateTime, nullable=True)
-    
-    # Additional profile fields
-    phone_number = Column(String(20), nullable=True)
-    date_of_birth = Column(DateTime, nullable=True)
-    location = Column(String(255), nullable=True)
-    bio = Column(Text, nullable=True)
-    
-    # Privacy settings
-    profile_public = Column(Boolean, default=True, nullable=False)
-    email_notifications = Column(Boolean, default=True, nullable=False)
-    
-    # Indexes for performance
-    __table_args__ = (
-        Index('idx_user_email', 'email'),
-        Index('idx_user_google_id', 'google_id'),
-        Index('idx_user_facebook_id', 'facebook_id'),
-        Index('idx_user_created_at', 'created_at'),
-        Index('idx_user_role', 'role'),
-    )
-
 # Utility functions
+
+def user_to_dict(user: User) -> Dict[str, Any]:
+    """Convert User to dictionary for API responses"""
+    return {
+        'id': user.id,
+        'email': user.email,
+        'full_name': user.full_name,
+        'profile_picture': user.profile_picture,
+        'email_verified': user.email_verified,
+        'is_active': user.is_active,
+        'role': user.role.value if user.role else None,
+        'is_registered': user.is_registered,
+        'registration_completed_at': user.registration_completed_at.isoformat() if user.registration_completed_at else None,
+        'created_at': user.created_at.isoformat() if user.created_at else None,
+        'updated_at': user.updated_at.isoformat() if user.updated_at else None,
+        'last_login': user.last_login.isoformat() if user.last_login else None,
+        'phone_number': user.phone_number,
+        'location': user.location,
+        'bio': user.bio,
+        'profile_public': user.profile_public,
+        'email_notifications': user.email_notifications
+    }
+
+def individual_registration_to_dict(registration: IndividualRegistration) -> Dict[str, Any]:
+    """Convert IndividualRegistration to dictionary for API responses"""
+    return {
+        'id': registration.id,
+        'full_name': registration.full_name,
+        'email': registration.email,
+        'phone_number': registration.phone_number,
+        'date_of_birth': registration.date_of_birth.isoformat() if registration.date_of_birth else None,
+        'address_line1': registration.address_line1,
+        'address_line2': registration.address_line2,
+        'city': registration.city,
+        'state': registration.state,
+        'postal_code': registration.postal_code,
+        'country': registration.country,
+        'id_type': registration.id_type,
+        'id_number': registration.id_number,
+        'id_document_url': registration.id_document_url,
+        'is_verified': registration.is_verified,
+        'verification_status': registration.verification_status.value if registration.verification_status else None,
+        'created_at': registration.created_at.isoformat() if registration.created_at else None,
+        'updated_at': registration.updated_at.isoformat() if registration.updated_at else None
+    }
+
+def organization_registration_to_dict(registration: OrganizationRegistration) -> Dict[str, Any]:
+    """Convert OrganizationRegistration to dictionary for API responses"""
+    return {
+        'id': registration.id,
+        'organization_name': registration.organization_name,
+        'organization_type': registration.organization_type.value if registration.organization_type else None,
+        'email': registration.email,
+        'phone_number': registration.phone_number,
+        'website': registration.website,
+        'address_line1': registration.address_line1,
+        'address_line2': registration.address_line2,
+        'city': registration.city,
+        'state': registration.state,
+        'postal_code': registration.postal_code,
+        'country': registration.country,
+        'registration_number': registration.registration_number,
+        'tax_id': registration.tax_id,
+        'fcra_number': registration.fcra_number,
+        'ngo_garpan_id': registration.ngo_garpan_id,
+        'registration_certificate_url': registration.registration_certificate_url,
+        'tax_exemption_certificate_url': registration.tax_exemption_certificate_url,
+        'fcra_certificate_url': registration.fcra_certificate_url,
+        'contact_person_name': registration.contact_person_name,
+        'contact_person_designation': registration.contact_person_designation,
+        'contact_person_phone': registration.contact_person_phone,
+        'contact_person_email': registration.contact_person_email,
+        'is_verified': registration.is_verified,
+        'verification_status': registration.verification_status.value if registration.verification_status else None,
+        'created_at': registration.created_at.isoformat() if registration.created_at else None,
+        'updated_at': registration.updated_at.isoformat() if registration.updated_at else None
+    }
+
+# Keep existing utility functions for fraud detection
 def dict_to_entity(data: Dict[str, Any]) -> FraudDetectionEntity:
     """Convert dictionary to FraudDetectionEntity"""
     entity = FraudDetectionEntity()
@@ -379,209 +664,5 @@ def entity_to_dict(entity: FraudDetectionEntity) -> Dict[str, Any]:
         'updated_at': entity.updated_at.isoformat() if entity.updated_at else None,
         'last_analyzed': entity.last_analyzed.isoformat() if entity.last_analyzed else None,
         'analysis_version': entity.analysis_version
-    }
-
-def user_to_dict(user: User) -> Dict[str, Any]:
-    """Convert User to dictionary for API responses"""
-    return {
-        'id': user.id,
-        'email': user.email,
-        'full_name': user.full_name,
-        'profile_picture': user.profile_picture,
-        'email_verified': user.email_verified,
-        'is_active': user.is_active,
-        'role': user.role.value if user.role else None,
-        'created_at': user.created_at.isoformat() if user.created_at else None,
-        'updated_at': user.updated_at.isoformat() if user.updated_at else None,
-        'last_login': user.last_login.isoformat() if user.last_login else None,
-        'phone_number': user.phone_number,
-        'location': user.location,
-        'bio': user.bio,
-        'profile_public': user.profile_public,
-        'email_notifications': user.email_notifications
-    }
-
-
-# Additional Enums for Campaign Management
-class CampaignStatus(str, Enum):
-    DRAFT = "draft"
-    ACTIVE = "active"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    UNDER_REVIEW = "under_review"
-
-# Campaign Model
-class Campaign(Base):
-    __tablename__ = "campaigns"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    title = Column(String(200), nullable=False)
-    description = Column(Text, nullable=False)
-    short_description = Column(String(500))
-    
-    # Financial details
-    goal_amount = Column(Float, nullable=False)
-    current_amount = Column(Float, default=0.0)
-    currency = Column(String(3), default="INR")
-    
-    # Campaign details
-    category = Column(SQLEnum(CampaignCategory), nullable=False)
-    status = Column(SQLEnum(CampaignStatus), default=CampaignStatus.DRAFT)
-    
-    # Relationships
-    creator_id = Column(String, nullable=False, index=True)
-    
-    # Media
-    featured_image = Column(String(500))
-    images = Column(JSON)  # Array of image URLs
-    video_url = Column(String(500))
-    
-    # Timestamps
-    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-    start_date = Column(DateTime, nullable=True)
-    end_date = Column(DateTime, nullable=True)
-    
-    # Campaign settings
-    allow_anonymous_donations = Column(Boolean, default=True)
-    show_donor_names = Column(Boolean, default=True)
-    
-    # Location
-    location = Column(String(200))
-    country = Column(String(100))
-    
-    # Social proof
-    donor_count = Column(Integer, default=0)
-    share_count = Column(Integer, default=0)
-    view_count = Column(Integer, default=0)
-    
-    # Verification
-    is_verified = Column(Boolean, default=False)
-    verification_documents = Column(JSON)
-
-# Donation Model
-class Donation(Base):
-    __tablename__ = "donations"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    
-    # Financial details
-    amount = Column(Float, nullable=False)
-    currency = Column(String(3), default="INR")
-    
-    # Relationships
-    campaign_id = Column(String, nullable=False, index=True)
-    donor_id = Column(String, nullable=True, index=True)  # Nullable for anonymous donations
-    
-    # Donor information (for anonymous donations)
-    donor_name = Column(String(100))
-    donor_email = Column(String(100))
-    
-    # Payment details
-    payment_method = Column(String(50))
-    payment_id = Column(String(100))  # External payment gateway ID
-    payment_status = Column(String(20), default="pending")
-    
-    # Message
-    message = Column(Text)
-    is_anonymous = Column(Boolean, default=False)
-    
-    # Timestamps
-    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-
-# Campaign Update Model
-class CampaignUpdate(Base):
-    __tablename__ = "campaign_updates"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    
-    # Relationships
-    campaign_id = Column(String, nullable=False, index=True)
-    author_id = Column(String, nullable=False, index=True)
-    
-    # Content
-    title = Column(String(200), nullable=False)
-    content = Column(Text, nullable=False)
-    
-    # Media
-    images = Column(JSON)  # Array of image URLs
-    video_url = Column(String(500))
-    
-    # Timestamps
-    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-
-# Comment Model
-class Comment(Base):
-    __tablename__ = "comments"
-    
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    
-    # Relationships
-    campaign_id = Column(String, nullable=False, index=True)
-    author_id = Column(String, nullable=False, index=True)
-    
-    # Content
-    content = Column(Text, nullable=False)
-    
-    # Moderation
-    is_approved = Column(Boolean, default=True)
-    is_flagged = Column(Boolean, default=False)
-    
-    # Timestamps
-    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
-
-# Helper functions for new models
-def campaign_to_dict(campaign: Campaign) -> Dict[str, Any]:
-    """Convert Campaign to dictionary for API responses"""
-    return {
-        'id': campaign.id,
-        'title': campaign.title,
-        'description': campaign.description,
-        'short_description': campaign.short_description,
-        'goal_amount': campaign.goal_amount,
-        'current_amount': campaign.current_amount,
-        'currency': campaign.currency,
-        'category': campaign.category.value if campaign.category else None,
-        'status': campaign.status.value if campaign.status else None,
-        'creator_id': campaign.creator_id,
-        'featured_image': campaign.featured_image,
-        'images': campaign.images,
-        'video_url': campaign.video_url,
-        'created_at': campaign.created_at.isoformat() if campaign.created_at else None,
-        'updated_at': campaign.updated_at.isoformat() if campaign.updated_at else None,
-        'start_date': campaign.start_date.isoformat() if campaign.start_date else None,
-        'end_date': campaign.end_date.isoformat() if campaign.end_date else None,
-        'allow_anonymous_donations': campaign.allow_anonymous_donations,
-        'show_donor_names': campaign.show_donor_names,
-        'location': campaign.location,
-        'country': campaign.country,
-        'donor_count': campaign.donor_count,
-        'share_count': campaign.share_count,
-        'view_count': campaign.view_count,
-        'is_verified': campaign.is_verified,
-        'verification_documents': campaign.verification_documents
-    }
-
-def donation_to_dict(donation: Donation) -> Dict[str, Any]:
-    """Convert Donation to dictionary for API responses"""
-    return {
-        'id': donation.id,
-        'amount': donation.amount,
-        'currency': donation.currency,
-        'campaign_id': donation.campaign_id,
-        'donor_id': donation.donor_id,
-        'donor_name': donation.donor_name,
-        'donor_email': donation.donor_email,
-        'payment_method': donation.payment_method,
-        'payment_id': donation.payment_id,
-        'payment_status': donation.payment_status,
-        'message': donation.message,
-        'is_anonymous': donation.is_anonymous,
-        'created_at': donation.created_at.isoformat() if donation.created_at else None,
-        'updated_at': donation.updated_at.isoformat() if donation.updated_at else None
     }
 
