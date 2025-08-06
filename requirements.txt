@@ -21,9 +21,7 @@ asyncpg==0.29.0
 authlib==1.2.1
 httpx==0.25.2
 requests==2.31.0
-
-# Rate limiting & middleware
-slowapi==0.1.9
+slowapi==0.1.9  
 starlette-context==0.3.6
 
 # Email service
