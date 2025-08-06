@@ -1,212 +1,65 @@
-# HAVEN Backend - Updated Requirements with ImportError Fixes
-# All dependencies required for successful import and execution
-# Last updated: December 2024
-
-# ================================================================================
-# CORE WEB FRAMEWORK (REQUIRED)
-# ================================================================================
-fastapi==0.103.2
-uvicorn[standard]==0.23.2
+# HAVEN Backend Requirements - Torch Compatibility Fixed
+# Core FastAPI dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
 python-multipart==0.0.6
-
-# ================================================================================
-# DATABASE & ORM (REQUIRED)
-# ================================================================================
-sqlalchemy==2.0.21
-psycopg2-binary==2.9.7  # FIXED: Added for PostgreSQL support
-alembic==1.12.0
-asyncpg==0.26.0  # FIXED: Required by database.py
-
-# ================================================================================
-# AUTHENTICATION & SECURITY (REQUIRED)
-# ================================================================================
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
-PyJWT==2.8.0
-authlib==1.2.1  # FIXED: Required by oauth_config.py
-cryptography==41.0.4
+pydantic[email]==2.5.0
+pydantic-settings==2.1.0
 
-# ================================================================================
-# OAUTH INTEGRATION (REQUIRED)
-# ================================================================================
-google-auth==2.22.0
-google-auth-oauthlib==1.0.0
-google-api-python-client==2.97.0
-facebook-sdk==3.1.0
+# Database dependencies
+sqlalchemy==2.0.23
+alembic==1.13.1
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
 
-# ================================================================================
-# HTTP CLIENT (REQUIRED)
-# ================================================================================
-httpx==0.24.1
+# Authentication & OAuth
+authlib==1.2.1
+httpx==0.25.2
 requests==2.31.0
 
-# ================================================================================
-# CONFIGURATION & ENVIRONMENT (REQUIRED)
-# ================================================================================
-python-dotenv==1.0.0
-pydantic==2.4.2
-pydantic-settings==2.0.3
-email-validator==2.2.0  # FIXED: Required by oauth_routes.py
+# Rate limiting & middleware
+slowapi==0.1.9
+starlette-context==0.3.6
 
-# ================================================================================
-# DATA PROCESSING (REQUIRED)
-# ================================================================================
-pandas==2.0.3
-numpy==1.24.4
-
-# ================================================================================
-# API RATE LIMITING (REQUIRED)
-# ================================================================================
-slowapi==0.1.9  # FIXED: Required by all route files
-
-# ================================================================================
-# CACHING & STORAGE (REQUIRED)
-# ================================================================================
-redis==4.6.0
-aioredis==2.0.1
-
-# ================================================================================
-# PAYMENT INTEGRATION (REQUIRED)
-# ================================================================================
-instamojo-wrapper==1.2.0
-
-# ================================================================================
-# EMAIL SERVICE (REQUIRED)
-# ================================================================================
+# Email service
 sib-api-v3-sdk==7.6.0
 
-# ================================================================================
-# SEARCH SERVICE (REQUIRED)
-# ================================================================================
-algoliasearch==3.0.0  # FIXED: Import compatibility handled in code
+# Payment integration
+instamojo-wrapper==1.1
 
-# ================================================================================
-# FILE PROCESSING (REQUIRED)
-# ================================================================================
-pillow==10.0.1
-aiofiles==23.1.0
+# Search service
+algoliasearch==3.0.0
 
-# ================================================================================
-# UTILITIES (REQUIRED)
-# ================================================================================
-python-slugify==8.0.1
-python-dateutil==2.8.2
+# Data processing
+pandas==2.1.4
+numpy==1.24.4
 
-# ================================================================================
-# PRODUCTION SERVER (REQUIRED)
-# ================================================================================
-gunicorn==21.2.0
-
-# ================================================================================
-# MONITORING & LOGGING (REQUIRED)
-# ================================================================================
-structlog==23.1.0
-
-# ================================================================================
-# SECURITY (REQUIRED)
-# ================================================================================
-secure==0.3.0
-
-# ================================================================================
-# HEALTH CHECKS (REQUIRED)
-# ================================================================================
-fastapi-health==0.4.0
-
-# ================================================================================
-# ML MODELS & NLP (OPTIONAL - Smart fallbacks implemented)
-# ================================================================================
-# These are optional - smart services will use fallbacks if not available
-torch==2.0.1
-torchvision==0.15.2
-torchaudio==2.0.2
-transformers==4.33.3
-tokenizers==0.13.3
-huggingface-hub==0.16.4
-
-# IndicTrans2 Dependencies (Optional)
-sentencepiece==0.1.99
-sacremoses==0.0.53
-indic-nlp-library==0.81
-
-# NLP Libraries (Optional)
+# ML Dependencies - Compatible versions
+torch==2.1.0
+transformers==4.35.2
+scikit-learn==1.3.2
 nltk==3.8.1
 
-# DistilBERT and SHAP for Fraud Detection (Optional)
-scikit-learn==1.3.0
-shap==0.42.1
+# Utilities
+python-dotenv==1.0.0
+email-validator==2.1.0
+Pillow==10.1.0
+aiofiles==23.2.1
 
-# Additional ML dependencies (Optional)
-joblib==1.3.2
-scipy==1.10.1
-
-# ================================================================================
-# DEVELOPMENT & TESTING (OPTIONAL)
-# ================================================================================
-pytest==7.4.0
+# Development & testing
+pytest==7.4.3
 pytest-asyncio==0.21.1
+black==23.11.0
+flake8==6.1.0
 
-# ================================================================================
-# DEPLOYMENT CONFIGURATION
-# ================================================================================
-# Environment Variables (REQUIRED):
-# SECRET_KEY=your-secret-key
-# SESSION_SECRET_KEY=your-session-secret
-# JWT_SECRET_KEY=your-jwt-secret
-# DATABASE_URL=postgresql://user:pass@host:port/db
-# GOOGLE_CLIENT_ID=your-google-id
-# GOOGLE_CLIENT_SECRET=your-google-secret
-# GOOGLE_REDIRECT_URI=your-callback-url
-# FACEBOOK_CLIENT_ID=your-facebook-id
-# FACEBOOK_CLIENT_SECRET=your-facebook-secret
-# FACEBOOK_REDIRECT_URI=your-callback-url
-# BREVO_API_KEY=your-brevo-key
-# ALGOLIA_APP_ID=your-algolia-id
-# ALGOLIA_API_KEY=your-algolia-key
-# INSTAMOJO_API_KEY=your-instamojo-key
-# INSTAMOJO_AUTH_TOKEN=your-instamojo-token
-# FIREBASE_PROJECT_ID=your-firebase-project
-# FIREBASE_CLIENT_EMAIL=your-firebase-email
-# FIREBASE_PRIVATE_KEY=your-firebase-key
-# FIREBASE_SERVICE_ACCOUNT_KEY_JSON_BASE64=your-base64-key
+# Logging & monitoring
+structlog==23.2.0
 
-# Build Command:
-# pip install --upgrade pip && pip install -r requirements.txt
-
-# Start Command:
-# uvicorn app:app --host 0.0.0.0 --port $PORT --workers 2
-
-# ================================================================================
-# IMPORTERROR FIXES SUMMARY
-# ================================================================================
-# 1. ✅ Added slowapi for rate limiting
-# 2. ✅ Added asyncpg for database connections
-# 3. ✅ Added authlib for OAuth
-# 4. ✅ Added alembic for database migrations
-# 5. ✅ Added psycopg2-binary for PostgreSQL
-# 6. ✅ Added email-validator for email validation
-# 7. ✅ Fixed algoliasearch import compatibility
-# 8. ✅ Created smart service wrappers for ML dependencies
-# 9. ✅ Implemented fallback services for graceful degradation
-# 10. ✅ Fixed APIRouter exception handler issues
-
-# ================================================================================
-# SMART SERVICE ARCHITECTURE
-# ================================================================================
-# The application now uses smart services that automatically detect dependency
-# availability and use appropriate implementations:
-#
-# - fraud_detection_service_smart.py (torch-based or rule-based fallback)
-# - translation_service_smart.py (ML-based or basic fallback)
-# - simplification_service_smart.py (ML-based or basic fallback)
-#
-# This ensures the application works with or without ML dependencies!
-
-# ================================================================================
-# DEPLOYMENT NOTES
-# ================================================================================
-# 1. All REQUIRED dependencies must be installed for basic functionality
-# 2. ML dependencies (torch, transformers) are OPTIONAL - fallbacks will be used
-# 3. Smart services provide graceful degradation when ML packages unavailable
-# 4. Application will start successfully with just the REQUIRED dependencies
-# 5. Full ML features available when optional ML dependencies are installed
+# Additional utilities
+python-dateutil==2.8.2
+pytz==2023.3
+cryptography<=41.0.8
+bcrypt==4.1.2
 
