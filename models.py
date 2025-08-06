@@ -62,6 +62,14 @@ class FraudReportStatus(str, Enum):
     RESOLVED = "resolved"
     DISMISSED = "dismissed"
 
+# User Management Models
+
+class UserRole(str, Enum):
+    """User roles for authentication and authorization"""
+    USER = "user"
+    ADMIN = "admin"
+    MODERATOR = "moderator"
+
 # SQLAlchemy Models
 
 class FraudDetectionEntity(Base):
@@ -107,8 +115,8 @@ class FraudDetectionEntity(Base):
     
     # Verification features
     has_government_verification = Column(Boolean, default=False, index=True)
-    has_complete_documentation = Column(Boolean, default=True)
-    has_clear_beneficiary = Column(Boolean, default=True)
+    has_complete_documentation = Column(Boolean, default=False)
+    has_clear_beneficiary = Column(Boolean, default=False)
     has_contact_info = Column(Boolean, default=True)
     has_medical_verification = Column(Boolean, default=False)
     has_regular_updates = Column(Boolean, default=False)
@@ -194,273 +202,136 @@ class FraudReport(Base):
     reported_at = Column(DateTime, default=func.now(), index=True)
     investigated_at = Column(DateTime)
     resolved_at = Column(DateTime)
-    investigator_id = Column(String(100))
-    
-    __table_args__ = (
-        Index('idx_report_status_time', 'status', 'reported_at'),
-    )
 
-class FraudDetectionStats(Base):
+class User(Base):
     """
-    Aggregated statistics for fraud detection performance
+    User model for authentication and user management
+    Supports OAuth authentication with Google and Facebook
     """
-    __tablename__ = "fraud_detection_stats"
+    __tablename__ = "users"
     
+    # Primary identification
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String(255), unique=True, nullable=False, index=True)
     
-    # Time period
-    date = Column(DateTime, nullable=False, index=True)
-    period_type = Column(String(20), nullable=False)  # daily, weekly, monthly
+    # Profile information
+    full_name = Column(String(255), nullable=True)
+    profile_picture = Column(String(500), nullable=True)
     
-    # Overall statistics
-    total_entities = Column(Integer, default=0)
-    fraudulent_entities = Column(Integer, default=0)
-    legitimate_entities = Column(Integer, default=0)
-    fraud_rate = Column(Float, default=0.0)
+    # Authentication
+    hashed_password = Column(String(255), nullable=True)  # Nullable for OAuth-only users
     
-    # Category statistics
-    category_stats = Column(JSON)
-    platform_stats = Column(JSON)
-    risk_level_stats = Column(JSON)
+    # OAuth provider IDs
+    google_id = Column(String(255), nullable=True, unique=True)
+    facebook_id = Column(String(255), nullable=True, unique=True)
     
-    # Performance metrics
-    avg_fraud_score = Column(Float, default=0.0)
-    avg_confidence = Column(Float, default=0.0)
-    processing_time_avg = Column(Float, default=0.0)
+    # Account status
+    email_verified = Column(Boolean, default=False, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
     
-    # Model performance
-    model_version = Column(String(50))
-    accuracy_metrics = Column(JSON)
+    # Role and permissions
+    role = Column(SQLEnum(UserRole), default=UserRole.USER, nullable=False)
     
-    # Metadata
-    created_at = Column(DateTime, default=func.now())
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    last_login = Column(DateTime, nullable=True)
     
+    # Additional profile fields
+    phone_number = Column(String(20), nullable=True)
+    date_of_birth = Column(DateTime, nullable=True)
+    location = Column(String(255), nullable=True)
+    bio = Column(Text, nullable=True)
+    
+    # Privacy settings
+    profile_public = Column(Boolean, default=True, nullable=False)
+    email_notifications = Column(Boolean, default=True, nullable=False)
+    
+    # Indexes for performance
     __table_args__ = (
-        Index('idx_stats_date_period', 'date', 'period_type'),
+        Index('idx_user_email', 'email'),
+        Index('idx_user_google_id', 'google_id'),
+        Index('idx_user_facebook_id', 'facebook_id'),
+        Index('idx_user_created_at', 'created_at'),
+        Index('idx_user_role', 'role'),
     )
 
-# Pydantic Models for API
-
-class FraudEntityBase(BaseModel):
-    """Base model for fraud detection entity"""
-    title: str = Field(..., min_length=1, max_length=500)
-    description: Optional[str] = Field(None, max_length=5000)
-    category: CampaignCategory
-    subcategory: Optional[str] = Field(None, max_length=100)
-    platform: Platform
-    organizer_name: str = Field(..., min_length=1, max_length=200)
-    organizer_type: OrganizerType
-    beneficiary: Optional[str] = Field(None, max_length=200)
-    location_city: Optional[str] = Field(None, max_length=100)
-    location_state: Optional[str] = Field(None, max_length=100)
-    funds_required: float = Field(..., gt=0)
-    funds_raised: Optional[float] = Field(0, ge=0)
-    funding_percentage: Optional[float] = Field(0, ge=0, le=200)
-    campaign_start_date: Optional[datetime] = None
-    campaign_age_days: Optional[int] = Field(0, ge=0)
-
-class FraudEntityCreate(FraudEntityBase):
-    """Model for creating fraud detection entity"""
-    # Verification features
-    has_government_verification: Optional[bool] = False
-    has_complete_documentation: Optional[bool] = True
-    has_clear_beneficiary: Optional[bool] = True
-    has_contact_info: Optional[bool] = True
-    has_medical_verification: Optional[bool] = False
-    has_regular_updates: Optional[bool] = False
-    has_social_media_presence: Optional[bool] = False
-    has_website: Optional[bool] = False
-    has_media_coverage: Optional[bool] = False
+# Utility functions
+def dict_to_entity(data: Dict[str, Any]) -> FraudDetectionEntity:
+    """Convert dictionary to FraudDetectionEntity"""
+    entity = FraudDetectionEntity()
     
-    # Risk indicators
-    is_new_organization: Optional[bool] = False
-    has_unrealistic_goal: Optional[bool] = False
-    has_duplicate_content: Optional[bool] = False
-    limited_social_proof: Optional[bool] = False
-    minimal_updates: Optional[bool] = False
-    unclear_fund_usage: Optional[bool] = False
-    no_previous_campaigns: Optional[bool] = False
+    # Map basic fields
+    for field in ['id', 'title', 'description', 'subcategory', 'organizer_name', 
+                  'beneficiary', 'location_city', 'location_state', 'funds_required',
+                  'funds_raised', 'funding_percentage', 'campaign_age_days',
+                  'is_fraudulent', 'fraud_score', 'analysis_version']:
+        if field in data and data[field] is not None:
+            setattr(entity, field, data[field])
     
-    # Additional features
-    features: Optional[Dict[str, Any]] = None
-
-class FraudEntityResponse(FraudEntityBase):
-    """Model for fraud detection entity response"""
-    id: str
-    is_fraudulent: bool
-    fraud_score: float = Field(..., ge=0, le=1)
-    risk_level: RiskLevel
-    verification_status: VerificationStatus
-    
-    # Verification features
-    has_government_verification: bool
-    has_complete_documentation: bool
-    has_clear_beneficiary: bool
-    has_contact_info: bool
-    has_medical_verification: bool
-    has_regular_updates: bool
-    has_social_media_presence: bool
-    has_website: bool
-    has_media_coverage: bool
-    
-    # Risk indicators
-    is_new_organization: bool
-    has_unrealistic_goal: bool
-    has_duplicate_content: bool
-    limited_social_proof: bool
-    minimal_updates: bool
-    unclear_fund_usage: bool
-    no_previous_campaigns: bool
-    
-    # Additional data
-    features: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    updated_at: datetime
-    last_analyzed: Optional[datetime] = None
-    analysis_version: str
-    
-    class Config:
-        from_attributes = True
-
-class FraudAnalysisHistoryResponse(BaseModel):
-    """Model for fraud analysis history response"""
-    id: str
-    entity_id: str
-    fraud_score: float
-    confidence: float
-    risk_level: RiskLevel
-    analysis_method: Optional[str] = None
-    model_version: Optional[str] = None
-    explanation: Optional[Dict[str, Any]] = None
-    recommendations: Optional[List[str]] = None
-    analyzed_at: datetime
-    analyzer_id: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
-
-class FraudReportCreate(BaseModel):
-    """Model for creating fraud report"""
-    entity_id: str
-    fraud_type: str = Field(..., min_length=1, max_length=100)
-    evidence: Optional[str] = Field(None, max_length=5000)
-    reporter_info: Optional[Dict[str, Any]] = None
-
-class FraudReportResponse(BaseModel):
-    """Model for fraud report response"""
-    id: str
-    entity_id: str
-    fraud_type: str
-    evidence: Optional[str] = None
-    reporter_info: Optional[Dict[str, Any]] = None
-    status: FraudReportStatus
-    investigation_notes: Optional[str] = None
-    resolution: Optional[str] = None
-    reported_at: datetime
-    investigated_at: Optional[datetime] = None
-    resolved_at: Optional[datetime] = None
-    investigator_id: Optional[str] = None
-    
-    class Config:
-        from_attributes = True
-
-class FraudStatsResponse(BaseModel):
-    """Model for fraud detection statistics response"""
-    id: str
-    date: datetime
-    period_type: str
-    total_entities: int
-    fraudulent_entities: int
-    legitimate_entities: int
-    fraud_rate: float
-    category_stats: Optional[Dict[str, Any]] = None
-    platform_stats: Optional[Dict[str, Any]] = None
-    risk_level_stats: Optional[Dict[str, Any]] = None
-    avg_fraud_score: float
-    avg_confidence: float
-    processing_time_avg: float
-    model_version: Optional[str] = None
-    accuracy_metrics: Optional[Dict[str, Any]] = None
-    created_at: datetime
-    
-    class Config:
-        from_attributes = True
-
-class DatabaseSummary(BaseModel):
-    """Model for database summary"""
-    total_entities: int
-    fraudulent_entities: int
-    legitimate_entities: int
-    fraud_rate: float
-    categories: Dict[str, Any]
-    platforms: Dict[str, Any]
-    risk_levels: Dict[str, Any]
-    verification_status: Dict[str, Any]
-    recent_activity: Dict[str, Any]
-    model_performance: Dict[str, Any]
-
-# Utility functions for model operations
-
-def create_fraud_entity_from_dict(data: Dict[str, Any]) -> FraudDetectionEntity:
-    """Create FraudDetectionEntity from dictionary data"""
-    
-    # Parse features if it's a JSON string
-    features = data.get('features')
-    if isinstance(features, str):
+    # Map enum fields
+    if 'category' in data and data['category']:
         try:
-            features = json.loads(features)
-        except json.JSONDecodeError:
-            features = {}
-    
-    # Extract boolean features from features dict
-    boolean_features = {}
-    if isinstance(features, dict):
-        boolean_feature_names = [
-            'has_government_verification', 'has_complete_documentation',
-            'has_clear_beneficiary', 'has_contact_info', 'has_medical_verification',
-            'has_regular_updates', 'has_social_media_presence', 'has_website',
-            'has_media_coverage', 'is_new_organization', 'has_unrealistic_goal',
-            'has_duplicate_content', 'limited_social_proof', 'minimal_updates',
-            'unclear_fund_usage', 'no_previous_campaigns'
-        ]
-        
-        for feature_name in boolean_feature_names:
-            boolean_features[feature_name] = features.get(feature_name, False)
-    
-    # Create entity
-    entity = FraudDetectionEntity(
-        id=data.get('id', str(uuid.uuid4())),
-        title=data.get('title', ''),
-        description=data.get('description'),
-        category=CampaignCategory(data.get('category', 'Unknown')),
-        subcategory=data.get('subcategory'),
-        platform=Platform(data.get('platform', 'Unknown')),
-        organizer_name=data.get('organizer_name', ''),
-        organizer_type=OrganizerType(data.get('organizer_type', 'individual')),
-        beneficiary=data.get('beneficiary'),
-        location_city=data.get('location_city'),
-        location_state=data.get('location_state'),
-        funds_required=float(data.get('funds_required', 0)),
-        funds_raised=float(data.get('funds_raised', 0)),
-        funding_percentage=float(data.get('funding_percentage', 0)),
-        campaign_age_days=int(data.get('campaign_age_days', 0)),
-        is_fraudulent=bool(data.get('is_fraudulent', False)),
-        fraud_score=float(data.get('fraud_score', 0.0)),
-        risk_level=RiskLevel(data.get('risk_level', 'medium')),
-        verification_status=VerificationStatus(data.get('verification_status', 'pending')),
-        features=features,
-        **boolean_features
-    )
-    
-    # Parse campaign start date
-    if 'campaign_start_date' in data and data['campaign_start_date']:
-        try:
-            if isinstance(data['campaign_start_date'], str):
-                entity.campaign_start_date = datetime.strptime(data['campaign_start_date'], '%Y-%m-%d')
-            elif isinstance(data['campaign_start_date'], datetime):
-                entity.campaign_start_date = data['campaign_start_date']
+            entity.category = CampaignCategory(data['category'])
         except ValueError:
-            pass
+            entity.category = CampaignCategory.UNKNOWN
+    
+    if 'platform' in data and data['platform']:
+        try:
+            entity.platform = Platform(data['platform'])
+        except ValueError:
+            entity.platform = Platform.UNKNOWN
+    
+    if 'organizer_type' in data and data['organizer_type']:
+        try:
+            entity.organizer_type = OrganizerType(data['organizer_type'])
+        except ValueError:
+            entity.organizer_type = OrganizerType.INDIVIDUAL
+    
+    if 'risk_level' in data and data['risk_level']:
+        try:
+            entity.risk_level = RiskLevel(data['risk_level'])
+        except ValueError:
+            entity.risk_level = RiskLevel.MEDIUM
+    
+    if 'verification_status' in data and data['verification_status']:
+        try:
+            entity.verification_status = VerificationStatus(data['verification_status'])
+        except ValueError:
+            entity.verification_status = VerificationStatus.PENDING
+    
+    # Map boolean fields
+    boolean_fields = [
+        'has_government_verification', 'has_complete_documentation', 'has_clear_beneficiary',
+        'has_contact_info', 'has_medical_verification', 'has_regular_updates',
+        'has_social_media_presence', 'has_website', 'has_media_coverage',
+        'is_new_organization', 'has_unrealistic_goal', 'has_duplicate_content',
+        'limited_social_proof', 'minimal_updates', 'unclear_fund_usage', 'no_previous_campaigns'
+    ]
+    
+    for field in boolean_fields:
+        if field in data:
+            setattr(entity, field, bool(data[field]))
+    
+    # Map datetime fields
+    if 'campaign_start_date' in data and data['campaign_start_date']:
+        if isinstance(data['campaign_start_date'], str):
+            try:
+                entity.campaign_start_date = datetime.fromisoformat(data['campaign_start_date'].replace('Z', '+00:00'))
+            except ValueError:
+                pass
+        elif isinstance(data['campaign_start_date'], datetime):
+            entity.campaign_start_date = data['campaign_start_date']
+    
+    # Map features (JSON field)
+    if 'features' in data and data['features']:
+        if isinstance(data['features'], dict):
+            entity.features = data['features']
+        elif isinstance(data['features'], str):
+            try:
+                entity.features = json.loads(data['features'])
+            except json.JSONDecodeError:
+                entity.features = {}
     
     return entity
 
@@ -508,5 +379,25 @@ def entity_to_dict(entity: FraudDetectionEntity) -> Dict[str, Any]:
         'updated_at': entity.updated_at.isoformat() if entity.updated_at else None,
         'last_analyzed': entity.last_analyzed.isoformat() if entity.last_analyzed else None,
         'analysis_version': entity.analysis_version
+    }
+
+def user_to_dict(user: User) -> Dict[str, Any]:
+    """Convert User to dictionary for API responses"""
+    return {
+        'id': user.id,
+        'email': user.email,
+        'full_name': user.full_name,
+        'profile_picture': user.profile_picture,
+        'email_verified': user.email_verified,
+        'is_active': user.is_active,
+        'role': user.role.value if user.role else None,
+        'created_at': user.created_at.isoformat() if user.created_at else None,
+        'updated_at': user.updated_at.isoformat() if user.updated_at else None,
+        'last_login': user.last_login.isoformat() if user.last_login else None,
+        'phone_number': user.phone_number,
+        'location': user.location,
+        'bio': user.bio,
+        'profile_public': user.profile_public,
+        'email_notifications': user.email_notifications
     }
 
