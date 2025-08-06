@@ -14,7 +14,7 @@ import asyncio
 from enum import Enum
 
 # Import services
-from fraud_detection_service import enhanced_fraud_detection_service
+from fraud_detection_service_smart import enhanced_fraud_detection_service
 
 logger = logging.getLogger(__name__)
 
@@ -589,19 +589,21 @@ async def get_model_info():
         logger.error(f"Error retrieving model info: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve model info: {str(e)}")
 
-# Error handlers
-@fraud_router.exception_handler(ValueError)
-async def value_error_handler(request, exc):
-    return JSONResponse(
-        status_code=400,
-        content={"detail": f"Invalid input: {str(exc)}"}
-    )
-
-@fraud_router.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    logger.error(f"Unhandled exception in fraud detection API: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error in fraud detection service"}
-    )
+# Note: Exception handlers should be added to the main FastAPI app, not APIRouter
+# These are commented out as APIRouter doesn't support exception_handler decorator
+# 
+# @fraud_router.exception_handler(ValueError)
+# async def value_error_handler(request, exc):
+#     return JSONResponse(
+#         status_code=400,
+#         content={"detail": f"Invalid input: {str(exc)}"}
+#     )
+# 
+# @fraud_router.exception_handler(Exception)
+# async def general_exception_handler(request, exc):
+#     logger.error(f"Unhandled exception in fraud detection API: {exc}")
+#     return JSONResponse(
+#         status_code=500,
+#         content={"detail": "Internal server error in fraud detection service"}
+#     )
 
