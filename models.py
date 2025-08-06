@@ -401,3 +401,187 @@ def user_to_dict(user: User) -> Dict[str, Any]:
         'email_notifications': user.email_notifications
     }
 
+
+# Additional Enums for Campaign Management
+class CampaignStatus(str, Enum):
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    UNDER_REVIEW = "under_review"
+
+# Campaign Model
+class Campaign(Base):
+    __tablename__ = "campaigns"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=False)
+    short_description = Column(String(500))
+    
+    # Financial details
+    goal_amount = Column(Float, nullable=False)
+    current_amount = Column(Float, default=0.0)
+    currency = Column(String(3), default="INR")
+    
+    # Campaign details
+    category = Column(SQLEnum(CampaignCategory), nullable=False)
+    status = Column(SQLEnum(CampaignStatus), default=CampaignStatus.DRAFT)
+    
+    # Relationships
+    creator_id = Column(String, nullable=False, index=True)
+    
+    # Media
+    featured_image = Column(String(500))
+    images = Column(JSON)  # Array of image URLs
+    video_url = Column(String(500))
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    start_date = Column(DateTime, nullable=True)
+    end_date = Column(DateTime, nullable=True)
+    
+    # Campaign settings
+    allow_anonymous_donations = Column(Boolean, default=True)
+    show_donor_names = Column(Boolean, default=True)
+    
+    # Location
+    location = Column(String(200))
+    country = Column(String(100))
+    
+    # Social proof
+    donor_count = Column(Integer, default=0)
+    share_count = Column(Integer, default=0)
+    view_count = Column(Integer, default=0)
+    
+    # Verification
+    is_verified = Column(Boolean, default=False)
+    verification_documents = Column(JSON)
+
+# Donation Model
+class Donation(Base):
+    __tablename__ = "donations"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Financial details
+    amount = Column(Float, nullable=False)
+    currency = Column(String(3), default="INR")
+    
+    # Relationships
+    campaign_id = Column(String, nullable=False, index=True)
+    donor_id = Column(String, nullable=True, index=True)  # Nullable for anonymous donations
+    
+    # Donor information (for anonymous donations)
+    donor_name = Column(String(100))
+    donor_email = Column(String(100))
+    
+    # Payment details
+    payment_method = Column(String(50))
+    payment_id = Column(String(100))  # External payment gateway ID
+    payment_status = Column(String(20), default="pending")
+    
+    # Message
+    message = Column(Text)
+    is_anonymous = Column(Boolean, default=False)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+# Campaign Update Model
+class CampaignUpdate(Base):
+    __tablename__ = "campaign_updates"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Relationships
+    campaign_id = Column(String, nullable=False, index=True)
+    author_id = Column(String, nullable=False, index=True)
+    
+    # Content
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    
+    # Media
+    images = Column(JSON)  # Array of image URLs
+    video_url = Column(String(500))
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+# Comment Model
+class Comment(Base):
+    __tablename__ = "comments"
+    
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    
+    # Relationships
+    campaign_id = Column(String, nullable=False, index=True)
+    author_id = Column(String, nullable=False, index=True)
+    
+    # Content
+    content = Column(Text, nullable=False)
+    
+    # Moderation
+    is_approved = Column(Boolean, default=True)
+    is_flagged = Column(Boolean, default=False)
+    
+    # Timestamps
+    created_at = Column(DateTime, default=func.now(), nullable=False, index=True)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+# Helper functions for new models
+def campaign_to_dict(campaign: Campaign) -> Dict[str, Any]:
+    """Convert Campaign to dictionary for API responses"""
+    return {
+        'id': campaign.id,
+        'title': campaign.title,
+        'description': campaign.description,
+        'short_description': campaign.short_description,
+        'goal_amount': campaign.goal_amount,
+        'current_amount': campaign.current_amount,
+        'currency': campaign.currency,
+        'category': campaign.category.value if campaign.category else None,
+        'status': campaign.status.value if campaign.status else None,
+        'creator_id': campaign.creator_id,
+        'featured_image': campaign.featured_image,
+        'images': campaign.images,
+        'video_url': campaign.video_url,
+        'created_at': campaign.created_at.isoformat() if campaign.created_at else None,
+        'updated_at': campaign.updated_at.isoformat() if campaign.updated_at else None,
+        'start_date': campaign.start_date.isoformat() if campaign.start_date else None,
+        'end_date': campaign.end_date.isoformat() if campaign.end_date else None,
+        'allow_anonymous_donations': campaign.allow_anonymous_donations,
+        'show_donor_names': campaign.show_donor_names,
+        'location': campaign.location,
+        'country': campaign.country,
+        'donor_count': campaign.donor_count,
+        'share_count': campaign.share_count,
+        'view_count': campaign.view_count,
+        'is_verified': campaign.is_verified,
+        'verification_documents': campaign.verification_documents
+    }
+
+def donation_to_dict(donation: Donation) -> Dict[str, Any]:
+    """Convert Donation to dictionary for API responses"""
+    return {
+        'id': donation.id,
+        'amount': donation.amount,
+        'currency': donation.currency,
+        'campaign_id': donation.campaign_id,
+        'donor_id': donation.donor_id,
+        'donor_name': donation.donor_name,
+        'donor_email': donation.donor_email,
+        'payment_method': donation.payment_method,
+        'payment_id': donation.payment_id,
+        'payment_status': donation.payment_status,
+        'message': donation.message,
+        'is_anonymous': donation.is_anonymous,
+        'created_at': donation.created_at.isoformat() if donation.created_at else None,
+        'updated_at': donation.updated_at.isoformat() if donation.updated_at else None
+    }
+
