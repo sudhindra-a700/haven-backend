@@ -15,7 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 
 # Import the fixed OAuth routes
-from fixed_oauth_routes import router as oauth_router
+from oauth_routes import router as oauth_router
 
 # Configure logging
 logging.basicConfig(
