@@ -52,18 +52,18 @@ except ImportError as e:
 
 # NEW: Registration routes import
 try:
-    from registration_routes import registration_router
+    from simple_registration_routes import registration_router
     route_imports['registration'] = registration_router
-    logger.info("✅ Registration routes imported")
+    logger.info("✅ Simple Registration routes imported")
 except ImportError as e:
-    logger.warning(f"⚠️ Registration routes import failed: {e}")
+    logger.warning(f"⚠️ Simple Registration routes import failed: {e}")
 
 try:
-    from oauth_routes import oauth_router
+    from simple_oauth_routes import oauth_router
     route_imports['oauth'] = oauth_router
-    logger.info("✅ OAuth routes imported")
+    logger.info("✅ Simple OAuth routes imported")
 except ImportError as e:
-    logger.warning(f"⚠️ OAuth routes import failed: {e}")
+    logger.warning(f"⚠️ Simple OAuth routes import failed: {e}")
 
 try:
     from fraud_routes import fraud_router
@@ -299,7 +299,10 @@ async def rbac_info():
 # Include routers with error handling
 for route_name, router in route_imports.items():
     try:
-        app.include_router(router, prefix=f"/api/v1")
+        if route_name == 'registration':
+            app.include_router(router, prefix="/api/v1/auth")
+        else:
+            app.include_router(router, prefix=f"/api/v1")
         logger.info(f"✅ {route_name.title()} routes registered")
     except Exception as e:
         logger.error(f"❌ Failed to register {route_name} routes: {e}")
