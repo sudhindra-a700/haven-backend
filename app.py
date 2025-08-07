@@ -52,14 +52,14 @@ except ImportError as e:
 
 # NEW: Registration routes import
 try:
-    from simple_registration_routes import registration_router
+    from registration_routes import registration_router
     route_imports['registration'] = registration_router
     logger.info("✅ Simple Registration routes imported")
 except ImportError as e:
     logger.warning(f"⚠️ Simple Registration routes import failed: {e}")
 
 try:
-    from simple_oauth_routes import oauth_router
+    from oauth_routes import oauth_router
     route_imports['oauth'] = oauth_router
     logger.info("✅ Simple OAuth routes imported")
 except ImportError as e:
