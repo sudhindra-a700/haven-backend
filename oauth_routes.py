@@ -1,531 +1,274 @@
 """
-OAuth Authentication Routes for HAVEN Crowdfunding Platform
-Secure Google and Facebook OAuth integration with proper error handling
+Simple Registration Routes for HAVEN Crowdfunding Platform
+Simplified version that works without database dependencies for testing
 """
 
-import logging
-import secrets
-from typing import Dict, Any, Optional
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, EmailStr
+from typing import Optional
 from datetime import datetime
-
-from fastapi import APIRouter, HTTPException, Depends, Request, Response, status
-from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
-from pydantic import BaseModel, EmailStr
-
-from database import get_db
-from models import User, UserRole
-from auth_middleware import (
-    create_user_tokens, PasswordManager, get_current_user,
-    token_manager, session_manager
-)
-from oauth_config import get_oauth_config, OAuthProvider, OAuthUser
-from config import get_settings
+import logging
+import hashlib
+import json
+import os
 
 logger = logging.getLogger(__name__)
 
-# Get configuration
-settings = get_settings()
-oauth_config = get_oauth_config()
-
 # Create router
-oauth_router = APIRouter()
+registration_router = APIRouter(tags=["registration"])
 
-# Pydantic models
-class LoginRequest(BaseModel):
+# Pydantic models for registration requests
+class IndividualRegistrationRequest(BaseModel):
+    """Request model for individual registration"""
+    full_name: str = Field(..., min_length=2, max_length=255)
     email: EmailStr
-    password: str
-
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: str
-    phone_number: Optional[str] = None
-
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
-    expires_in: int
-    user: Dict[str, Any]
-
-class OAuthStateData(BaseModel):
-    provider: str
-    redirect_url: Optional[str] = None
-    timestamp: float
-
-# In-memory state storage (use Redis in production)
-oauth_states = {}
-
-def generate_oauth_state(provider: str, redirect_url: str = None) -> str:
-    """Generate secure OAuth state parameter"""
-    state = secrets.token_urlsafe(32)
-    oauth_states[state] = OAuthStateData(
-        provider=provider,
-        redirect_url=redirect_url,
-        timestamp=datetime.utcnow().timestamp()
-    )
-    return state
-
-def validate_oauth_state(state: str) -> Optional[OAuthStateData]:
-    """Validate OAuth state parameter"""
-    state_data = oauth_states.get(state)
-    if not state_data:
-        return None
+    password: str = Field(..., min_length=8)
+    phone_number: Optional[str] = Field(None, max_length=20)
+    date_of_birth: Optional[str] = None
     
-    # Check if state is expired (10 minutes)
-    if datetime.utcnow().timestamp() - state_data.timestamp > 600:
-        oauth_states.pop(state, None)
-        return None
-    
-    return state_data
+    # Address Information
+    address_line1: Optional[str] = Field(None, max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    city: Optional[str] = Field(None, max_length=100)
+    state: Optional[str] = Field(None, max_length=100)
+    postal_code: Optional[str] = Field(None, max_length=20)
+    country: Optional[str] = Field(None, max_length=100)
 
-def create_or_update_user(oauth_user: OAuthUser, db: Session) -> User:
-    """Create or update user from OAuth data"""
-    # Check if user exists
-    user = db.query(User).filter(User.email == oauth_user.email).first()
+class OrganizationRegistrationRequest(BaseModel):
+    """Request model for organization registration"""
+    organization_name: str = Field(..., min_length=2, max_length=255)
+    organization_type: str = Field(..., max_length=100)
+    organization_email: EmailStr
+    password: str = Field(..., min_length=8)
+    phone_number: Optional[str] = Field(None, max_length=20)
+    website: Optional[str] = Field(None, max_length=255)
     
-    if user:
-        # Update existing user
-        if oauth_user.provider == "google" and not user.google_id:
-            user.google_id = oauth_user.provider_id
-        elif oauth_user.provider == "facebook" and not user.facebook_id:
-            user.facebook_id = oauth_user.provider_id
-        
-        # Update profile information if not set
-        if not user.profile_picture and oauth_user.picture:
-            user.profile_picture = oauth_user.picture
-        
-        user.email_verified = True
-        user.is_active = True
-        
-    else:
-        # Create new user
-        user = User(
-            email=oauth_user.email,
-            full_name=oauth_user.name,
-            profile_picture=oauth_user.picture,
-            email_verified=True,
-            is_active=True,
-            role=UserRole.USER
-        )
-        
-        # Set provider-specific ID
-        if oauth_user.provider == "google":
-            user.google_id = oauth_user.provider_id
-        elif oauth_user.provider == "facebook":
-            user.facebook_id = oauth_user.provider_id
-        
-        db.add(user)
-    
-    db.commit()
-    db.refresh(user)
-    return user
+    # Address Information
+    address_line1: str = Field(..., max_length=255)
+    address_line2: Optional[str] = Field(None, max_length=255)
+    city: str = Field(..., max_length=100)
+    state: str = Field(..., max_length=100)
+    postal_code: str = Field(..., max_length=20)
+    country: str = Field(..., max_length=100)
 
-# Traditional login/register endpoints
-@oauth_router.post("/login", response_model=TokenResponse)
-async def login(
-    login_data: LoginRequest,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """Traditional email/password login"""
+# Simple file-based storage for testing
+def save_registration(user_type: str, data: dict):
+    """Save registration data to a simple JSON file"""
     try:
-        # Find user
-        user = db.query(User).filter(User.email == login_data.email).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password"
-            )
+        file_path = f"/tmp/haven_{user_type}_registrations.json"
         
-        # Verify password
-        if not user.hashed_password or not PasswordManager.verify_password(
-            login_data.password, user.hashed_password
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password"
-            )
+        # Load existing data
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                registrations = json.load(f)
+        else:
+            registrations = []
         
-        # Check if user is active
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Account is disabled"
-            )
+        # Add new registration
+        data['registered_at'] = datetime.now().isoformat()
+        data['user_id'] = hashlib.md5(data['email'].encode()).hexdigest()[:8]
+        registrations.append(data)
         
-        # Create tokens
-        tokens = create_user_tokens(user)
+        # Save back to file
+        with open(file_path, 'w') as f:
+            json.dump(registrations, f, indent=2)
         
-        # Create session
-        session_id = session_manager.create_session(user.id, tokens["access_token"])
-        
-        logger.info(f"User {user.email} logged in successfully")
-        
-        return TokenResponse(
-            access_token=tokens["access_token"],
-            refresh_token=tokens["refresh_token"],
-            token_type=tokens["token_type"],
-            expires_in=settings.jwt_expiration_hours * 3600,
-            user={
-                "id": user.id,
-                "email": user.email,
-                "full_name": user.full_name,
-                "role": user.role.value,
-                "is_verified": user.is_verified
-            }
-        )
-    
-    except HTTPException:
-        raise
+        return data['user_id']
     except Exception as e:
-        logger.error(f"Login error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Login failed"
-        )
+        logger.error(f"Error saving registration: {e}")
+        raise HTTPException(status_code=500, detail="Registration save failed")
 
-@oauth_router.post("/register", response_model=TokenResponse)
-async def register(
-    register_data: RegisterRequest,
-    request: Request,
-    db: Session = Depends(get_db)
-):
-    """User registration"""
+def check_email_exists(email: str) -> bool:
+    """Check if email already exists in any registration file"""
+    for user_type in ['individual', 'organization']:
+        file_path = f"/tmp/haven_{user_type}_registrations.json"
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r') as f:
+                    registrations = json.load(f)
+                for reg in registrations:
+                    if reg.get('email') == email or reg.get('organization_email') == email:
+                        return True
+            except:
+                continue
+    return False
+
+@registration_router.post("/register/individual")
+async def register_individual(request: IndividualRegistrationRequest):
+    """Register a new individual user"""
     try:
-        # Check if user already exists
-        existing_user = db.query(User).filter(User.email == register_data.email).first()
-        if existing_user:
+        logger.info(f"Individual registration attempt for: {request.email}")
+        
+        # Check if email already exists
+        if check_email_exists(request.email):
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=400,
                 detail="Email already registered"
             )
         
-        # Validate password strength
-        if not PasswordManager.validate_password_strength(register_data.password):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Password must be at least 8 characters with uppercase, lowercase, digit, and special character"
-            )
+        # Prepare registration data
+        registration_data = {
+            "full_name": request.full_name,
+            "email": request.email,
+            "phone_number": request.phone_number,
+            "date_of_birth": request.date_of_birth,
+            "address_line1": request.address_line1,
+            "address_line2": request.address_line2,
+            "city": request.city,
+            "state": request.state,
+            "postal_code": request.postal_code,
+            "country": request.country,
+            "user_type": "individual",
+            "role": "individual"
+        }
         
-        # Create new user
-        hashed_password = PasswordManager.hash_password(register_data.password)
-        user = User(
-            email=register_data.email,
-            hashed_password=hashed_password,
-            full_name=register_data.full_name,
-            phone_number=register_data.phone_number,
-            role=UserRole.USER,
-            is_active=True
-        )
+        # Save registration
+        user_id = save_registration("individual", registration_data)
         
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+        logger.info(f"Individual registration successful for: {request.email}")
         
-        # Create tokens
-        tokens = create_user_tokens(user)
-        
-        # Create session
-        session_id = session_manager.create_session(user.id, tokens["access_token"])
-        
-        logger.info(f"New user registered: {user.email}")
-        
-        return TokenResponse(
-            access_token=tokens["access_token"],
-            refresh_token=tokens["refresh_token"],
-            token_type=tokens["token_type"],
-            expires_in=settings.jwt_expiration_hours * 3600,
-            user={
-                "id": user.id,
-                "email": user.email,
-                "full_name": user.full_name,
-                "role": user.role.value,
-                "is_verified": user.is_verified
+        return JSONResponse(
+            status_code=201,
+            content={
+                "message": "Individual registration successful",
+                "user_id": user_id,
+                "user_type": "individual",
+                "role": "individual",
+                "email": request.email,
+                "full_name": request.full_name,
+                "permissions": [
+                    "donate_to_campaigns",
+                    "view_campaigns", 
+                    "manage_own_profile",
+                    "view_donation_history"
+                ],
+                "next_steps": [
+                    "Complete email verification",
+                    "Set up profile preferences",
+                    "Browse available campaigns"
+                ]
             }
         )
-    
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Registration error: {e}")
+        logger.error(f"Individual registration error: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Registration failed"
+            status_code=500,
+            detail="Registration failed due to server error"
         )
 
-# Google OAuth endpoints
-@oauth_router.get("/google")
-async def google_login(request: Request, redirect_url: str = None):
-    """Initiate Google OAuth login"""
+@registration_router.post("/register/organization")
+async def register_organization(request: OrganizationRegistrationRequest):
+    """Register a new organization"""
     try:
-        if not oauth_config.is_google_configured:
+        logger.info(f"Organization registration attempt for: {request.organization_email}")
+        
+        # Check if email already exists
+        if check_email_exists(request.organization_email):
             raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Google OAuth not configured"
+                status_code=400,
+                detail="Email already registered"
             )
         
-        # Generate state
-        state = generate_oauth_state("google", redirect_url)
+        # Prepare registration data
+        registration_data = {
+            "organization_name": request.organization_name,
+            "organization_type": request.organization_type,
+            "organization_email": request.organization_email,
+            "email": request.organization_email,  # For consistency
+            "phone_number": request.phone_number,
+            "website": request.website,
+            "address_line1": request.address_line1,
+            "address_line2": request.address_line2,
+            "city": request.city,
+            "state": request.state,
+            "postal_code": request.postal_code,
+            "country": request.country,
+            "user_type": "organization",
+            "role": "organization"
+        }
         
-        # Get authorization URL
-        auth_url = oauth_config.get_google_auth_url(state)
+        # Save registration
+        user_id = save_registration("organization", registration_data)
         
-        logger.info("Google OAuth login initiated")
-        return RedirectResponse(url=auth_url)
-    
-    except Exception as e:
-        logger.error(f"Google OAuth initiation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth initiation failed"
-        )
-
-@oauth_router.get("/google/callback")
-async def google_callback(
-    request: Request,
-    code: str = None,
-    state: str = None,
-    error: str = None,
-    db: Session = Depends(get_db)
-):
-    """Handle Google OAuth callback"""
-    try:
-        # Check for OAuth errors
-        if error:
-            logger.warning(f"Google OAuth error: {error}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"OAuth error: {error}"
-            )
+        logger.info(f"Organization registration successful for: {request.organization_email}")
         
-        if not code or not state:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing authorization code or state"
-            )
-        
-        # Validate state
-        state_data = validate_oauth_state(state)
-        if not state_data or state_data.provider != "google":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired state"
-            )
-        
-        # Exchange code for token
-        token_data = oauth_config.exchange_google_code_for_token(code, state)
-        
-        # Get user info from Google
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                oauth_config.google_userinfo_url,
-                headers={"Authorization": f"Bearer {token_data['access_token']}"}
-            )
-            response.raise_for_status()
-            user_info = response.json()
-        
-        # Create OAuth user object
-        oauth_user = OAuthUser(
-            id=user_info["id"],
-            email=user_info["email"],
-            name=user_info["name"],
-            picture=user_info.get("picture"),
-            provider="google",
-            provider_id=user_info["id"]
+        return JSONResponse(
+            status_code=201,
+            content={
+                "message": "Organization registration successful",
+                "user_id": user_id,
+                "user_type": "organization",
+                "role": "organization",
+                "email": request.organization_email,
+                "organization_name": request.organization_name,
+                "permissions": [
+                    "create_campaigns",
+                    "manage_own_campaigns",
+                    "view_campaign_analytics",
+                    "manage_own_profile"
+                ],
+                "next_steps": [
+                    "Complete email verification",
+                    "Submit organization verification documents",
+                    "Create your first campaign"
+                ]
+            }
         )
         
-        # Create or update user
-        user = create_or_update_user(oauth_user, db)
-        
-        # Create tokens
-        tokens = create_user_tokens(user)
-        
-        # Create session
-        session_id = session_manager.create_session(user.id, tokens["access_token"])
-        
-        # Clean up state
-        oauth_states.pop(state, None)
-        
-        logger.info(f"Google OAuth login successful for {user.email}")
-        
-        # Redirect to frontend with tokens
-        frontend_url = state_data.redirect_url or settings.allowed_origins[0]
-        redirect_url = f"{frontend_url}/auth/callback?token={tokens['access_token']}&refresh={tokens['refresh_token']}"
-        
-        return RedirectResponse(url=redirect_url)
-    
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Google OAuth callback error: {e}")
+        logger.error(f"Organization registration error: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth callback failed"
+            status_code=500,
+            detail="Registration failed due to server error"
         )
 
-# Facebook OAuth endpoints
-@oauth_router.get("/facebook")
-async def facebook_login(request: Request, redirect_url: str = None):
-    """Initiate Facebook OAuth login"""
+@registration_router.get("/registration-status/{email}")
+async def get_registration_status(email: str):
+    """Get registration status for an email"""
     try:
-        if not oauth_config.is_facebook_configured:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Facebook OAuth not configured"
-            )
-        
-        # Generate state
-        state = generate_oauth_state("facebook", redirect_url)
-        
-        # Get authorization URL
-        auth_url = oauth_config.get_facebook_auth_url(state)
-        
-        logger.info("Facebook OAuth login initiated")
-        return RedirectResponse(url=auth_url)
-    
-    except Exception as e:
-        logger.error(f"Facebook OAuth initiation error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth initiation failed"
-        )
-
-@oauth_router.get("/facebook/callback")
-async def facebook_callback(
-    request: Request,
-    code: str = None,
-    state: str = None,
-    error: str = None,
-    db: Session = Depends(get_db)
-):
-    """Handle Facebook OAuth callback"""
-    try:
-        # Check for OAuth errors
-        if error:
-            logger.warning(f"Facebook OAuth error: {error}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"OAuth error: {error}"
-            )
-        
-        if not code or not state:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing authorization code or state"
-            )
-        
-        # Validate state
-        state_data = validate_oauth_state(state)
-        if not state_data or state_data.provider != "facebook":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid or expired state"
-            )
-        
-        # Exchange code for token
-        token_data = oauth_config.exchange_facebook_code_for_token(code, state)
-        
-        # Get user info from Facebook
-        import httpx
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                f"{oauth_config.facebook_userinfo_url}?fields=id,name,email,picture&access_token={token_data['access_token']}"
-            )
-            response.raise_for_status()
-            user_info = response.json()
-        
-        # Create OAuth user object
-        oauth_user = OAuthUser(
-            id=user_info["id"],
-            email=user_info.get("email"),
-            name=user_info["name"],
-            picture=user_info.get("picture", {}).get("data", {}).get("url"),
-            provider="facebook",
-            provider_id=user_info["id"]
-        )
-        
-        # Create or update user
-        user = create_or_update_user(oauth_user, db)
-        
-        # Create tokens
-        tokens = create_user_tokens(user)
-        
-        # Create session
-        session_id = session_manager.create_session(user.id, tokens["access_token"])
-        
-        # Clean up state
-        oauth_states.pop(state, None)
-        
-        logger.info(f"Facebook OAuth login successful for {user.email}")
-        
-        # Redirect to frontend with tokens
-        frontend_url = state_data.redirect_url or settings.allowed_origins[0]
-        redirect_url = f"{frontend_url}/auth/callback?token={tokens['access_token']}&refresh={tokens['refresh_token']}"
-        
-        return RedirectResponse(url=redirect_url)
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Facebook OAuth callback error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth callback failed"
-        )
-
-# Token management endpoints
-@oauth_router.post("/refresh")
-async def refresh_token(refresh_token: str):
-    """Refresh access token"""
-    try:
-        new_access_token = token_manager.refresh_access_token(refresh_token)
+        for user_type in ['individual', 'organization']:
+            file_path = f"/tmp/haven_{user_type}_registrations.json"
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    registrations = json.load(f)
+                for reg in registrations:
+                    if reg.get('email') == email or reg.get('organization_email') == email:
+                        return {
+                            "email": email,
+                            "registered": True,
+                            "user_type": reg.get('user_type'),
+                            "role": reg.get('role'),
+                            "registered_at": reg.get('registered_at')
+                        }
         
         return {
-            "access_token": new_access_token,
-            "token_type": "bearer",
-            "expires_in": settings.jwt_expiration_hours * 3600
+            "email": email,
+            "registered": False,
+            "user_type": None,
+            "role": None
         }
-    
-    except Exception as e:
-        logger.error(f"Token refresh error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid refresh token"
-        )
-
-@oauth_router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user)):
-    """Logout user and revoke session"""
-    try:
-        # Revoke all user sessions
-        session_manager.revoke_user_sessions(current_user.id)
         
-        logger.info(f"User {current_user.email} logged out")
-        
-        return {"message": "Logged out successfully"}
-    
     except Exception as e:
-        logger.error(f"Logout error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed"
-        )
+        logger.error(f"Error checking registration status: {e}")
+        raise HTTPException(status_code=500, detail="Status check failed")
 
-# User info endpoint
-@oauth_router.get("/me")
-async def get_current_user_info(current_user: User = Depends(get_current_user)):
-    """Get current user information"""
+@registration_router.get("/health")
+async def registration_health():
+    """Health check for registration service"""
     return {
-        "id": current_user.id,
-        "email": current_user.email,
-        "full_name": current_user.full_name,
-        "role": current_user.role.value,
-        "is_verified": current_user.is_verified,
-        "email_verified": current_user.email_verified,
-        "profile_picture": current_user.profile_picture,
-        "created_at": current_user.created_at.isoformat()
+        "service": "registration",
+        "status": "healthy",
+        "version": "1.0.0",
+        "endpoints": [
+            "/register/individual",
+            "/register/organization", 
+            "/registration-status/{email}"
+        ]
     }
 
