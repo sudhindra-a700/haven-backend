@@ -1,274 +1,295 @@
 """
-Simple Registration Routes for HAVEN Crowdfunding Platform
-Simplified version that works without database dependencies for testing
+Simple OAuth Routes for HAVEN Crowdfunding Platform
+Simplified OAuth integration for Google and Facebook login
 """
 
-from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, EmailStr
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
 import logging
 import hashlib
 import json
 import os
+import secrets
+import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 # Create router
-registration_router = APIRouter(tags=["registration"])
+oauth_router = APIRouter(tags=["oauth"])
 
-# Pydantic models for registration requests
-class IndividualRegistrationRequest(BaseModel):
-    """Request model for individual registration"""
-    full_name: str = Field(..., min_length=2, max_length=255)
-    email: EmailStr
-    password: str = Field(..., min_length=8)
-    phone_number: Optional[str] = Field(None, max_length=20)
-    date_of_birth: Optional[str] = None
-    
-    # Address Information
-    address_line1: Optional[str] = Field(None, max_length=255)
-    address_line2: Optional[str] = Field(None, max_length=255)
-    city: Optional[str] = Field(None, max_length=100)
-    state: Optional[str] = Field(None, max_length=100)
-    postal_code: Optional[str] = Field(None, max_length=20)
-    country: Optional[str] = Field(None, max_length=100)
+# OAuth configuration
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "demo-google-client-id")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "demo-google-secret")
+FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "demo-facebook-app-id")
+FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "demo-facebook-secret")
 
-class OrganizationRegistrationRequest(BaseModel):
-    """Request model for organization registration"""
-    organization_name: str = Field(..., min_length=2, max_length=255)
-    organization_type: str = Field(..., max_length=100)
-    organization_email: EmailStr
-    password: str = Field(..., min_length=8)
-    phone_number: Optional[str] = Field(None, max_length=20)
-    website: Optional[str] = Field(None, max_length=255)
-    
-    # Address Information
-    address_line1: str = Field(..., max_length=255)
-    address_line2: Optional[str] = Field(None, max_length=255)
-    city: str = Field(..., max_length=100)
-    state: str = Field(..., max_length=100)
-    postal_code: str = Field(..., max_length=20)
-    country: str = Field(..., max_length=100)
+# Base URLs
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8501")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
-# Simple file-based storage for testing
-def save_registration(user_type: str, data: dict):
-    """Save registration data to a simple JSON file"""
+class OAuthCallbackRequest(BaseModel):
+    """OAuth callback request model"""
+    code: str
+    state: Optional[str] = None
+    user_type: Optional[str] = "individual"  # individual or organization
+
+def save_oauth_user(provider: str, user_data: dict, user_type: str = "individual"):
+    """Save OAuth user data to simple file storage"""
     try:
-        file_path = f"/tmp/haven_{user_type}_registrations.json"
+        file_path = f"/tmp/haven_oauth_{provider}_users.json"
         
         # Load existing data
         if os.path.exists(file_path):
             with open(file_path, 'r') as f:
-                registrations = json.load(f)
+                users = json.load(f)
         else:
-            registrations = []
+            users = []
         
-        # Add new registration
-        data['registered_at'] = datetime.now().isoformat()
-        data['user_id'] = hashlib.md5(data['email'].encode()).hexdigest()[:8]
-        registrations.append(data)
+        # Check if user already exists
+        for user in users:
+            if user.get('email') == user_data.get('email'):
+                # Update existing user
+                user.update(user_data)
+                user['last_login'] = user_data.get('registered_at')
+                break
+        else:
+            # Add new user
+            user_data['user_type'] = user_type
+            user_data['role'] = user_type
+            user_data['provider'] = provider
+            user_data['user_id'] = hashlib.md5(user_data['email'].encode()).hexdigest()[:8]
+            users.append(user_data)
         
         # Save back to file
         with open(file_path, 'w') as f:
-            json.dump(registrations, f, indent=2)
+            json.dump(users, f, indent=2)
         
-        return data['user_id']
+        return user_data.get('user_id')
     except Exception as e:
-        logger.error(f"Error saving registration: {e}")
-        raise HTTPException(status_code=500, detail="Registration save failed")
+        logger.error(f"Error saving OAuth user: {e}")
+        raise HTTPException(status_code=500, detail="OAuth user save failed")
 
-def check_email_exists(email: str) -> bool:
-    """Check if email already exists in any registration file"""
-    for user_type in ['individual', 'organization']:
-        file_path = f"/tmp/haven_{user_type}_registrations.json"
-        if os.path.exists(file_path):
-            try:
-                with open(file_path, 'r') as f:
-                    registrations = json.load(f)
-                for reg in registrations:
-                    if reg.get('email') == email or reg.get('organization_email') == email:
-                        return True
-            except:
-                continue
-    return False
-
-@registration_router.post("/register/individual")
-async def register_individual(request: IndividualRegistrationRequest):
-    """Register a new individual user"""
+@oauth_router.get("/google/login")
+async def google_login(user_type: str = "individual"):
+    """Initiate Google OAuth login"""
     try:
-        logger.info(f"Individual registration attempt for: {request.email}")
+        # Generate state for security
+        state = secrets.token_urlsafe(32)
         
-        # Check if email already exists
-        if check_email_exists(request.email):
-            raise HTTPException(
-                status_code=400,
-                detail="Email already registered"
-            )
+        # Store state temporarily (in production, use Redis or database)
+        state_file = f"/tmp/oauth_state_{state}.json"
+        with open(state_file, 'w') as f:
+            json.dump({"user_type": user_type, "provider": "google"}, f)
         
-        # Prepare registration data
-        registration_data = {
-            "full_name": request.full_name,
-            "email": request.email,
-            "phone_number": request.phone_number,
-            "date_of_birth": request.date_of_birth,
-            "address_line1": request.address_line1,
-            "address_line2": request.address_line2,
-            "city": request.city,
-            "state": request.state,
-            "postal_code": request.postal_code,
-            "country": request.country,
-            "user_type": "individual",
-            "role": "individual"
-        }
+        # Google OAuth URL
+        redirect_uri = f"{BACKEND_URL}/api/v1/auth/google/callback"
         
-        # Save registration
-        user_id = save_registration("individual", registration_data)
-        
-        logger.info(f"Individual registration successful for: {request.email}")
-        
-        return JSONResponse(
-            status_code=201,
-            content={
-                "message": "Individual registration successful",
-                "user_id": user_id,
-                "user_type": "individual",
-                "role": "individual",
-                "email": request.email,
-                "full_name": request.full_name,
-                "permissions": [
-                    "donate_to_campaigns",
-                    "view_campaigns", 
-                    "manage_own_profile",
-                    "view_donation_history"
-                ],
-                "next_steps": [
-                    "Complete email verification",
-                    "Set up profile preferences",
-                    "Browse available campaigns"
-                ]
-            }
+        google_auth_url = (
+            "https://accounts.google.com/o/oauth2/auth?"
+            f"client_id={GOOGLE_CLIENT_ID}&"
+            f"redirect_uri={urllib.parse.quote(redirect_uri)}&"
+            "scope=openid email profile&"
+            "response_type=code&"
+            "access_type=offline&"
+            f"state={state}"
         )
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Individual registration error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Registration failed due to server error"
-        )
-
-@registration_router.post("/register/organization")
-async def register_organization(request: OrganizationRegistrationRequest):
-    """Register a new organization"""
-    try:
-        logger.info(f"Organization registration attempt for: {request.organization_email}")
-        
-        # Check if email already exists
-        if check_email_exists(request.organization_email):
-            raise HTTPException(
-                status_code=400,
-                detail="Email already registered"
-            )
-        
-        # Prepare registration data
-        registration_data = {
-            "organization_name": request.organization_name,
-            "organization_type": request.organization_type,
-            "organization_email": request.organization_email,
-            "email": request.organization_email,  # For consistency
-            "phone_number": request.phone_number,
-            "website": request.website,
-            "address_line1": request.address_line1,
-            "address_line2": request.address_line2,
-            "city": request.city,
-            "state": request.state,
-            "postal_code": request.postal_code,
-            "country": request.country,
-            "user_type": "organization",
-            "role": "organization"
-        }
-        
-        # Save registration
-        user_id = save_registration("organization", registration_data)
-        
-        logger.info(f"Organization registration successful for: {request.organization_email}")
-        
-        return JSONResponse(
-            status_code=201,
-            content={
-                "message": "Organization registration successful",
-                "user_id": user_id,
-                "user_type": "organization",
-                "role": "organization",
-                "email": request.organization_email,
-                "organization_name": request.organization_name,
-                "permissions": [
-                    "create_campaigns",
-                    "manage_own_campaigns",
-                    "view_campaign_analytics",
-                    "manage_own_profile"
-                ],
-                "next_steps": [
-                    "Complete email verification",
-                    "Submit organization verification documents",
-                    "Create your first campaign"
-                ]
-            }
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Organization registration error: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Registration failed due to server error"
-        )
-
-@registration_router.get("/registration-status/{email}")
-async def get_registration_status(email: str):
-    """Get registration status for an email"""
-    try:
-        for user_type in ['individual', 'organization']:
-            file_path = f"/tmp/haven_{user_type}_registrations.json"
-            if os.path.exists(file_path):
-                with open(file_path, 'r') as f:
-                    registrations = json.load(f)
-                for reg in registrations:
-                    if reg.get('email') == email or reg.get('organization_email') == email:
-                        return {
-                            "email": email,
-                            "registered": True,
-                            "user_type": reg.get('user_type'),
-                            "role": reg.get('role'),
-                            "registered_at": reg.get('registered_at')
-                        }
+        logger.info(f"Google OAuth login initiated for user_type: {user_type}")
         
         return {
-            "email": email,
-            "registered": False,
-            "user_type": None,
-            "role": None
+            "auth_url": google_auth_url,
+            "provider": "google",
+            "user_type": user_type,
+            "state": state
         }
         
     except Exception as e:
-        logger.error(f"Error checking registration status: {e}")
+        logger.error(f"Google OAuth initiation error: {e}")
+        raise HTTPException(status_code=500, detail="OAuth initiation failed")
+
+@oauth_router.get("/facebook/login")
+async def facebook_login(user_type: str = "individual"):
+    """Initiate Facebook OAuth login"""
+    try:
+        # Generate state for security
+        state = secrets.token_urlsafe(32)
+        
+        # Store state temporarily
+        state_file = f"/tmp/oauth_state_{state}.json"
+        with open(state_file, 'w') as f:
+            json.dump({"user_type": user_type, "provider": "facebook"}, f)
+        
+        # Facebook OAuth URL
+        redirect_uri = f"{BACKEND_URL}/api/v1/auth/facebook/callback"
+        
+        facebook_auth_url = (
+            "https://www.facebook.com/v18.0/dialog/oauth?"
+            f"client_id={FACEBOOK_APP_ID}&"
+            f"redirect_uri={urllib.parse.quote(redirect_uri)}&"
+            "scope=email,public_profile&"
+            "response_type=code&"
+            f"state={state}"
+        )
+        
+        logger.info(f"Facebook OAuth login initiated for user_type: {user_type}")
+        
+        return {
+            "auth_url": facebook_auth_url,
+            "provider": "facebook", 
+            "user_type": user_type,
+            "state": state
+        }
+        
+    except Exception as e:
+        logger.error(f"Facebook OAuth initiation error: {e}")
+        raise HTTPException(status_code=500, detail="OAuth initiation failed")
+
+@oauth_router.get("/google/callback")
+async def google_callback(code: str, state: str):
+    """Handle Google OAuth callback"""
+    try:
+        # Verify state
+        state_file = f"/tmp/oauth_state_{state}.json"
+        if not os.path.exists(state_file):
+            raise HTTPException(status_code=400, detail="Invalid state parameter")
+        
+        with open(state_file, 'r') as f:
+            state_data = json.load(f)
+        
+        # Clean up state file
+        os.remove(state_file)
+        
+        # In a real implementation, you would exchange the code for tokens
+        # and fetch user info from Google API
+        # For demo purposes, we'll simulate this
+        
+        # Simulated user data (in production, fetch from Google API)
+        user_data = {
+            "email": "demo.google.user@gmail.com",
+            "full_name": "Google Demo User",
+            "provider": "google",
+            "provider_id": "google_demo_123",
+            "registered_at": "2025-08-07T01:35:00Z",
+            "verified": True
+        }
+        
+        user_type = state_data.get("user_type", "individual")
+        user_id = save_oauth_user("google", user_data, user_type)
+        
+        # Redirect to frontend with success
+        frontend_redirect = f"{FRONTEND_URL}?oauth_success=true&provider=google&user_type={user_type}&user_id={user_id}"
+        
+        logger.info(f"Google OAuth callback successful for: {user_data['email']}")
+        
+        return RedirectResponse(url=frontend_redirect)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Google OAuth callback error: {e}")
+        # Redirect to frontend with error
+        error_redirect = f"{FRONTEND_URL}?oauth_error=true&provider=google&message={urllib.parse.quote(str(e))}"
+        return RedirectResponse(url=error_redirect)
+
+@oauth_router.get("/facebook/callback")
+async def facebook_callback(code: str, state: str):
+    """Handle Facebook OAuth callback"""
+    try:
+        # Verify state
+        state_file = f"/tmp/oauth_state_{state}.json"
+        if not os.path.exists(state_file):
+            raise HTTPException(status_code=400, detail="Invalid state parameter")
+        
+        with open(state_file, 'r') as f:
+            state_data = json.load(f)
+        
+        # Clean up state file
+        os.remove(state_file)
+        
+        # In a real implementation, you would exchange the code for tokens
+        # and fetch user info from Facebook API
+        # For demo purposes, we'll simulate this
+        
+        # Simulated user data (in production, fetch from Facebook API)
+        user_data = {
+            "email": "demo.facebook.user@facebook.com",
+            "full_name": "Facebook Demo User",
+            "provider": "facebook",
+            "provider_id": "facebook_demo_456",
+            "registered_at": "2025-08-07T01:35:00Z",
+            "verified": True
+        }
+        
+        user_type = state_data.get("user_type", "individual")
+        user_id = save_oauth_user("facebook", user_data, user_type)
+        
+        # Redirect to frontend with success
+        frontend_redirect = f"{FRONTEND_URL}?oauth_success=true&provider=facebook&user_type={user_type}&user_id={user_id}"
+        
+        logger.info(f"Facebook OAuth callback successful for: {user_data['email']}")
+        
+        return RedirectResponse(url=frontend_redirect)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Facebook OAuth callback error: {e}")
+        # Redirect to frontend with error
+        error_redirect = f"{FRONTEND_URL}?oauth_error=true&provider=facebook&message={urllib.parse.quote(str(e))}"
+        return RedirectResponse(url=error_redirect)
+
+@oauth_router.get("/status/{provider}/{user_id}")
+async def get_oauth_user_status(provider: str, user_id: str):
+    """Get OAuth user status"""
+    try:
+        file_path = f"/tmp/haven_oauth_{provider}_users.json"
+        if os.path.exists(file_path):
+            with open(file_path, 'r') as f:
+                users = json.load(f)
+            for user in users:
+                if user.get('user_id') == user_id:
+                    return {
+                        "user_id": user_id,
+                        "provider": provider,
+                        "email": user.get('email'),
+                        "full_name": user.get('full_name'),
+                        "user_type": user.get('user_type'),
+                        "role": user.get('role'),
+                        "verified": user.get('verified', False),
+                        "registered_at": user.get('registered_at')
+                    }
+        
+        raise HTTPException(status_code=404, detail="OAuth user not found")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting OAuth user status: {e}")
         raise HTTPException(status_code=500, detail="Status check failed")
 
-@registration_router.get("/health")
-async def registration_health():
-    """Health check for registration service"""
+@oauth_router.get("/health")
+async def oauth_health():
+    """Health check for OAuth service"""
     return {
-        "service": "registration",
+        "service": "oauth",
         "status": "healthy",
         "version": "1.0.0",
+        "providers": ["google", "facebook"],
         "endpoints": [
-            "/register/individual",
-            "/register/organization", 
-            "/registration-status/{email}"
-        ]
+            "/google/login",
+            "/facebook/login",
+            "/google/callback",
+            "/facebook/callback",
+            "/status/{provider}/{user_id}"
+        ],
+        "configuration": {
+            "google_configured": bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_ID != "demo-google-client-id"),
+            "facebook_configured": bool(FACEBOOK_APP_ID and FACEBOOK_APP_ID != "demo-facebook-app-id"),
+            "frontend_url": FRONTEND_URL,
+            "backend_url": BACKEND_URL
+        }
     }
+
 
