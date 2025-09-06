@@ -1,22 +1,20 @@
-# oauth_routes.py - Complete file with minimal changes applied
-# This is your complete oauth_routes.py with the OAuth redirect fixes
+"""
+Complete Backend OAuth Routes for HAVEN Crowdfunding Platform
+This file contains the complete OAuth implementation for the backend
+"""
 
 from fastapi import APIRouter, HTTPException, Query, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse  # ADDED HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from typing import Optional, Dict, Any
 import os
 import httpx
 import json
 from urllib.parse import urlencode
-import jwt  # ADDED FOR JWT TOKEN GENERATION
-from datetime import datetime, timedelta  # ADDED FOR JWT EXPIRATION
+import jwt
+from datetime import datetime, timedelta
 
 # Create router
 router = APIRouter()
-
-# ================================
-# JWT TOKEN GENERATION (NEW FUNCTION)
-# ================================
 
 def generate_jwt_token(user_data: Dict[str, Any]) -> str:
     """Generate JWT token for authenticated user"""
@@ -26,16 +24,13 @@ def generate_jwt_token(user_data: Dict[str, Any]) -> str:
         "name": user_data.get("name"),
         "provider": user_data.get("provider"),
         "user_type": user_data.get("user_type"),
+        "picture": user_data.get("picture"),
         "exp": datetime.utcnow() + timedelta(hours=24),
         "iat": datetime.utcnow()
     }
     
     jwt_secret = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
     return jwt.encode(payload, jwt_secret, algorithm="HS256")
-
-# ================================
-# HTML PAGE GENERATION (NEW FUNCTIONS)
-# ================================
 
 def create_oauth_success_page(provider: str, jwt_token: str, user_data: Dict[str, Any]) -> str:
     """Create HTML page for successful OAuth"""
@@ -46,36 +41,62 @@ def create_oauth_success_page(provider: str, jwt_token: str, user_data: Dict[str
     <html>
     <head>
         <title>Authentication Successful</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body {{
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 display: flex;
                 justify-content: center;
                 align-items: center;
                 height: 100vh;
                 margin: 0;
-                background-color: #f5f5f5;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
             }}
             .success-container {{
                 text-align: center;
-                background: white;
-                padding: 2rem;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                padding: 3rem;
+                border-radius: 16px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                max-width: 400px;
+                width: 90%;
             }}
             .success-icon {{
-                color: #4CAF50;
-                font-size: 3rem;
+                font-size: 4rem;
                 margin-bottom: 1rem;
+                animation: bounce 2s infinite;
+            }}
+            .provider-name {{
+                color: #4CAF50;
+                font-weight: bold;
+                text-transform: capitalize;
+            }}
+            .loading-dots {{
+                display: inline-block;
+                animation: dots 1.5s infinite;
+            }}
+            @keyframes bounce {{
+                0%, 20%, 50%, 80%, 100% {{ transform: translateY(0); }}
+                40% {{ transform: translateY(-10px); }}
+                60% {{ transform: translateY(-5px); }}
+            }}
+            @keyframes dots {{
+                0%, 20% {{ opacity: 0; }}
+                50% {{ opacity: 1; }}
+                100% {{ opacity: 0; }}
             }}
         </style>
     </head>
     <body>
         <div class="success-container">
-            <div class="success-icon">✓</div>
+            <div class="success-icon">✅</div>
             <h2>Authentication Successful!</h2>
-            <p>You have successfully signed in with {provider.title()}.</p>
-            <p>Redirecting to application...</p>
+            <p>You have successfully signed in with <span class="provider-name">{provider}</span>.</p>
+            <p>Redirecting to application<span class="loading-dots">...</span></p>
         </div>
         
         <script>
@@ -87,28 +108,58 @@ def create_oauth_success_page(provider: str, jwt_token: str, user_data: Dict[str
                 user: {json.dumps(user_data)}
             }};
             
-            // Try to communicate with parent window
-            try {{
-                if (window.opener) {{
-                    window.opener.postMessage({{
-                        type: 'OAUTH_SUCCESS',
-                        data: authData
-                    }}, '*');
-                    window.close();
-                }} else if (window.parent && window.parent !== window) {{
-                    window.parent.postMessage({{
-                        type: 'OAUTH_SUCCESS',
-                        data: authData
-                    }}, '*');
-                }} else {{
-                    // Fallback: redirect to frontend with token
-                    window.location.href = '{frontend_url}?auth=success&token=' + encodeURIComponent('{jwt_token}');
+            console.log('OAuth Success - sending data to parent window:', authData);
+            
+            // Try multiple communication methods
+            function communicateWithParent() {{
+                try {{
+                    // Method 1: PostMessage to opener (popup)
+                    if (window.opener && !window.opener.closed) {{
+                        console.log('Sending message to opener window');
+                        window.opener.postMessage({{
+                            type: 'OAUTH_SUCCESS',
+                            data: authData
+                        }}, '*');
+                        
+                        // Close popup after short delay
+                        setTimeout(() => {{
+                            window.close();
+                        }}, 1000);
+                        return;
+                    }}
+                    
+                    // Method 2: PostMessage to parent (iframe)
+                    if (window.parent && window.parent !== window) {{
+                        console.log('Sending message to parent window');
+                        window.parent.postMessage({{
+                            type: 'OAUTH_SUCCESS',
+                            data: authData
+                        }}, '*');
+                        return;
+                    }}
+                    
+                    // Method 3: Fallback - redirect to frontend with token
+                    console.log('No parent window found, redirecting to frontend');
+                    const redirectUrl = '{frontend_url}?auth=success&token=' + encodeURIComponent('{jwt_token}');
+                    window.location.href = redirectUrl;
+                    
+                }} catch (error) {{
+                    console.error('Error communicating with parent window:', error);
+                    // Final fallback
+                    const redirectUrl = '{frontend_url}?auth=success&token=' + encodeURIComponent('{jwt_token}');
+                    window.location.href = redirectUrl;
                 }}
-            }} catch (error) {{
-                console.error('Error communicating with parent window:', error);
-                // Fallback: redirect to frontend
-                window.location.href = '{frontend_url}?auth=success&token=' + encodeURIComponent('{jwt_token}');
             }}
+            
+            // Execute communication after page loads
+            if (document.readyState === 'loading') {{
+                document.addEventListener('DOMContentLoaded', communicateWithParent);
+            }} else {{
+                communicateWithParent();
+            }}
+            
+            // Also try after a short delay to ensure everything is loaded
+            setTimeout(communicateWithParent, 500);
         </script>
     </body>
     </html>
@@ -122,73 +173,121 @@ def create_oauth_error_page(provider: str, error_message: str) -> str:
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Authentication Error</title>
+        <title>Authentication Failed</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
             body {{
-                font-family: Arial, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
                 display: flex;
                 justify-content: center;
                 align-items: center;
                 height: 100vh;
                 margin: 0;
-                background-color: #f5f5f5;
+                background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+                color: white;
             }}
             .error-container {{
                 text-align: center;
-                background: white;
-                padding: 2rem;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                background: rgba(255, 255, 255, 0.1);
+                backdrop-filter: blur(10px);
+                padding: 3rem;
+                border-radius: 16px;
+                box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                max-width: 400px;
+                width: 90%;
             }}
             .error-icon {{
-                color: #f44336;
-                font-size: 3rem;
+                font-size: 4rem;
                 margin-bottom: 1rem;
+            }}
+            .provider-name {{
+                color: #ffeb3b;
+                font-weight: bold;
+                text-transform: capitalize;
+            }}
+            .error-message {{
+                background: rgba(255, 255, 255, 0.1);
+                padding: 1rem;
+                border-radius: 8px;
+                margin: 1rem 0;
+                font-family: monospace;
+                font-size: 0.9rem;
+            }}
+            .retry-button {{
+                background: #4CAF50;
+                color: white;
+                border: none;
+                padding: 12px 24px;
+                border-radius: 8px;
+                cursor: pointer;
+                font-size: 16px;
+                margin-top: 1rem;
+                transition: background-color 0.2s;
+            }}
+            .retry-button:hover {{
+                background: #45a049;
             }}
         </style>
     </head>
     <body>
         <div class="error-container">
-            <div class="error-icon">✗</div>
+            <div class="error-icon">❌</div>
             <h2>Authentication Failed</h2>
-            <p>There was an error signing in with {provider.title()}.</p>
-            <div>{error_message}</div>
-            <button onclick="closeWindow()">Close and Retry</button>
+            <p><span class="provider-name">{provider}</span> authentication was unsuccessful.</p>
+            <div class="error-message">{error_message}</div>
+            <button class="retry-button" onclick="closeWindow()">Close and Retry</button>
         </div>
         
         <script>
             function closeWindow() {{
+                // Send error message to parent window
+                const errorData = {{
+                    success: false,
+                    provider: '{provider}',
+                    error: '{error_message}'
+                }};
+                
                 try {{
-                    if (window.opener) {{
+                    if (window.opener && !window.opener.closed) {{
                         window.opener.postMessage({{
                             type: 'OAUTH_ERROR',
-                            data: {{
-                                provider: '{provider}',
-                                error: '{error_message}'
-                            }}
+                            data: errorData
                         }}, '*');
                         window.close();
+                    }} else if (window.parent && window.parent !== window) {{
+                        window.parent.postMessage({{
+                            type: 'OAUTH_ERROR',
+                            data: errorData
+                        }}, '*');
                     }} else {{
-                        window.location.href = '{frontend_url}?auth=error&provider={provider}&message=' + encodeURIComponent('{error_message}');
+                        // Redirect to frontend with error
+                        const redirectUrl = '{frontend_url}?auth=error&provider={provider}&message=' + encodeURIComponent('{error_message}');
+                        window.location.href = redirectUrl;
                     }}
                 }} catch (error) {{
-                    window.location.href = '{frontend_url}?auth=error&provider={provider}&message=' + encodeURIComponent('{error_message}');
+                    console.error('Error communicating with parent window:', error);
+                    // Fallback redirect
+                    const redirectUrl = '{frontend_url}?auth=error&provider={provider}&message=' + encodeURIComponent('{error_message}');
+                    window.location.href = redirectUrl;
                 }}
             }}
+            
+            // Auto-close after 10 seconds
+            setTimeout(closeWindow, 10000);
         </script>
     </body>
     </html>
     """
 
 # ================================
-# GOOGLE OAUTH ROUTES (UPDATED)
+# GOOGLE OAUTH ROUTES
 # ================================
 
 @router.get("/auth/google/login")
 async def google_login(user_type: str = Query("individual")):
-    """
-    FIXED: Initiate Google OAuth login - NOW RETURNS JSON
-    """
+    """Initiate Google OAuth login - RETURNS JSON"""
     try:
         # Build Google OAuth authorization URL
         auth_params = {
@@ -218,9 +317,7 @@ async def google_callback(
     error: Optional[str] = Query(None),
     state: Optional[str] = Query("individual")
 ):
-    """
-    FIXED: Handle Google OAuth callback with JWT token generation
-    """
+    """Handle Google OAuth callback with JWT token generation"""
     try:
         if error:
             return HTMLResponse(content=create_oauth_error_page("google", error))
@@ -285,14 +382,12 @@ async def google_callback(
         return HTMLResponse(content=create_oauth_error_page("google", str(e)))
 
 # ================================
-# FACEBOOK OAUTH ROUTES (UPDATED)
+# FACEBOOK OAUTH ROUTES
 # ================================
 
 @router.get("/auth/facebook/login")
 async def facebook_login(user_type: str = Query("individual")):
-    """
-    FIXED: Initiate Facebook OAuth login - NOW RETURNS JSON
-    """
+    """Initiate Facebook OAuth login - RETURNS JSON"""
     try:
         # Build Facebook OAuth authorization URL
         auth_params = {
@@ -321,9 +416,7 @@ async def facebook_callback(
     error: Optional[str] = Query(None),
     state: Optional[str] = Query("individual")
 ):
-    """
-    FIXED: Handle Facebook OAuth callback with JWT token generation
-    """
+    """Handle Facebook OAuth callback with JWT token generation"""
     try:
         if error:
             return HTMLResponse(content=create_oauth_error_page("facebook", error))
@@ -373,7 +466,7 @@ async def facebook_callback(
             "name": user_data.get("name"),
             "provider": "facebook",
             "user_type": state,
-            "picture": user_data.get("picture", {}).get("data", {}).get("url")
+            "picture": user_data.get("picture", {}).get("data", {}).get("url") if user_data.get("picture") else None
         }
         
         # Generate JWT token
@@ -386,58 +479,7 @@ async def facebook_callback(
         return HTMLResponse(content=create_oauth_error_page("facebook", str(e)))
 
 # ================================
-# ADDITIONAL UTILITY ROUTES
-# ================================
-
-@router.get("/auth/verify-token")
-async def verify_token(token: str = Query(...)):
-    """Verify JWT token validity"""
-    try:
-        jwt_secret = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-        decoded_token = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        
-        return {
-            "valid": True,
-            "user_data": {
-                "user_id": decoded_token.get("user_id"),
-                "email": decoded_token.get("email"),
-                "name": decoded_token.get("name"),
-                "provider": decoded_token.get("provider"),
-                "user_type": decoded_token.get("user_type")
-            }
-        }
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-@router.post("/auth/refresh-token")
-async def refresh_token(token: str = Query(...)):
-    """Refresh JWT token"""
-    try:
-        jwt_secret = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
-        decoded_token = jwt.decode(token, jwt_secret, algorithms=["HS256"])
-        
-        # Generate new token with extended expiration
-        new_token = generate_jwt_token({
-            "id": decoded_token.get("user_id"),
-            "email": decoded_token.get("email"),
-            "name": decoded_token.get("name"),
-            "provider": decoded_token.get("provider"),
-            "user_type": decoded_token.get("user_type")
-        })
-        
-        return {
-            "access_token": new_token,
-            "token_type": "bearer"
-        }
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-# ================================
-# HEALTH CHECK
+# UTILITY ROUTES
 # ================================
 
 @router.get("/auth/health")
@@ -447,6 +489,45 @@ async def auth_health():
         "status": "healthy",
         "service": "oauth",
         "timestamp": datetime.utcnow().isoformat(),
-        "providers": ["google", "facebook"]
+        "providers": ["google", "facebook"],
+        "environment": {
+            "google_configured": bool(os.getenv("GOOGLE_CLIENT_ID")),
+            "facebook_configured": bool(os.getenv("FACEBOOK_APP_ID")),
+            "jwt_configured": bool(os.getenv("JWT_SECRET_KEY")),
+            "frontend_url": os.getenv("FRONTEND_URL", "not_set")
+        }
     }
+
+@router.post("/auth/verify-token")
+async def verify_token(token: str):
+    """Verify JWT token validity"""
+    try:
+        jwt_secret = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+        decoded_token = jwt.decode(token, jwt_secret, algorithms=["HS256"])
+        return {
+            "valid": True,
+            "user_data": decoded_token
+        }
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+@router.post("/auth/refresh-token")
+async def refresh_token(token: str):
+    """Refresh expired JWT token"""
+    try:
+        jwt_secret = os.getenv("JWT_SECRET_KEY", "your-secret-key-change-in-production")
+        # Decode without verification to get user data
+        decoded_token = jwt.decode(token, jwt_secret, algorithms=["HS256"], options={"verify_exp": False})
+        
+        # Generate new token
+        new_token = generate_jwt_token(decoded_token)
+        
+        return {
+            "token": new_token,
+            "user_data": decoded_token
+        }
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
