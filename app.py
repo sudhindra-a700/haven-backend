@@ -91,11 +91,6 @@ app.add_middleware(
 # Include OAuth routes (FIXED - uncommented and corrected prefix)
 app.include_router(oauth_router, prefix="/api/v1/auth", tags=["OAuth Authentication"])
 
-# Include other route modules here
-# app.include_router(campaign_router, prefix="/api/v1", tags=["Campaigns"])
-# app.include_router(user_router, prefix="/api/v1", tags=["Users"])
-# app.include_router(fraud_router, prefix="/api/v1", tags=["Fraud Detection"])
-
 # ===== ROOT ROUTES =====
 
 @app.get("/")
