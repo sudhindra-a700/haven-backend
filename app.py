@@ -1,5 +1,4 @@
-"""
-FIXED Main Application for HAVEN Crowdfunding Platform
+""" FIXED Main Application for HAVEN Crowdfunding Platform
 This file contains the corrected FastAPI application that fixes:
 1. CORS configuration issues
 2. Proper route inclusion with API prefix
@@ -24,12 +23,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Application lifespan manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     logger.info("Starting HAVEN Crowdfunding Platform API")
-    logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
+    logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'Not set')}")
     logger.info(f"Frontend URL: {os.getenv('FRONTEND_URL', 'Not set')}")
     logger.info(f"Backend URL: {os.getenv('BACKEND_URL', 'Not set')}")
     yield
@@ -68,7 +66,6 @@ def get_allowed_origins():
             origins.extend([
                 "http://localhost:3000",
                 "http://localhost:8501",
-                "http://localhost:8000"
             ])
     
     # If no origins configured, allow all (not recommended for production)
@@ -91,8 +88,8 @@ app.add_middleware(
 
 # ===== ROUTE INCLUSION =====
 
-# Include OAuth routes (already has /api/v1 prefix)
-app.include_router(oauth_router, tags=["OAuth Authentication"])
+# Include OAuth routes (FIXED - uncommented and corrected prefix)
+app.include_router(oauth_router, prefix="/api/v1/auth", tags=["OAuth Authentication"])
 
 # Include other route modules here
 # app.include_router(campaign_router, prefix="/api/v1", tags=["Campaigns"])
@@ -116,103 +113,30 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
+        "message": "HAVEN Backend API is running",
+        "version": "1.0.0",
         "environment": os.getenv("ENVIRONMENT", "development"),
-        "oauth_enabled": os.getenv("FEATURES_OAUTH_ENABLED", "false").lower() == "true"
-    }
-
-@app.get("/api/v1/config")
-async def get_config():
-    """Get public configuration"""
-    return {
-        "oauth_enabled": os.getenv("FEATURES_OAUTH_ENABLED", "false").lower() == "true",
-        "translation_enabled": os.getenv("FEATURES_TRANSLATION_ENABLED", "false").lower() == "true",
-        "simplification_enabled": os.getenv("FEATURES_SIMPLIFICATION_ENABLED", "false").lower() == "true",
-        "fraud_detection_enabled": os.getenv("FEATURES_FRAUD_DETECTION_ENABLED", "false").lower() == "true",
-        "frontend_url": os.getenv("FRONTEND_URL"),
-        "environment": os.getenv("ENVIRONMENT", "development")
-    }
-
-# ===== ERROR HANDLERS =====
-
-@app.exception_handler(404)
-async def not_found_handler(request: Request, exc):
-    """Handle 404 errors"""
-    return JSONResponse(
-        status_code=404,
-        content={
-            "error": "Not Found",
-            "message": f"The requested path {request.url.path} was not found",
-            "available_endpoints": [
-                "/",
-                "/health",
-                "/api/v1/config",
-                "/api/v1/auth/google/login",
-                "/api/v1/auth/facebook/login",
-                "/api/v1/auth/status"
-            ]
+        "available_endpoints": {
+            "root": "/",
+            "health": "/health",
+            "docs": "/docs",
+            "oauth_google_login": "/api/v1/auth/google/login",
+            "oauth_facebook_login": "/api/v1/auth/facebook/login",
+            "oauth_status": "/api/v1/auth/status"
         }
-    )
+    }
 
-@app.exception_handler(500)
-async def internal_error_handler(request: Request, exc):
-    """Handle 500 errors"""
-    logger.error(f"Internal server error: {str(exc)}")
+# Global exception handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception: {exc}")
     return JSONResponse(
         status_code=500,
-        content={
-            "error": "Internal Server Error",
-            "message": "An unexpected error occurred"
-        }
+        content={"detail": "Internal server error"}
     )
-
-# ===== MIDDLEWARE =====
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all requests"""
-    logger.info(f"{request.method} {request.url.path} - {request.client.host if request.client else 'unknown'}")
-    response = await call_next(request)
-    logger.info(f"Response: {response.status_code}")
-    return response
-
-# ===== STARTUP VALIDATION =====
-
-@app.on_event("startup")
-async def validate_environment():
-    """Validate environment configuration on startup"""
-    required_vars = [
-        "GOOGLE_CLIENT_ID",
-        "GOOGLE_CLIENT_SECRET", 
-        "FACEBOOK_APP_ID",
-        "FACEBOOK_APP_SECRET",
-        "FRONTEND_URL"
-    ]
-    
-    missing_vars = []
-    for var in required_vars:
-        if not os.getenv(var):
-            missing_vars.append(var)
-    
-    if missing_vars:
-        logger.warning(f"Missing environment variables: {missing_vars}")
-        logger.warning("OAuth functionality may not work properly")
-    else:
-        logger.info("All required environment variables are configured")
 
 if __name__ == "__main__":
     import uvicorn
-    
-    # Get configuration from environment
-    host = "0.0.0.0"  # Always bind to all interfaces for deployment
     port = int(os.getenv("PORT", 8000))
-    
-    logger.info(f"Starting server on {host}:{port}")
-    
-    uvicorn.run(
-        "fixed_app:app",
-        host=host,
-        port=port,
-        reload=os.getenv("ENVIRONMENT") != "production",
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
