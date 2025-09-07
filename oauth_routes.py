@@ -285,7 +285,7 @@ def create_oauth_error_page(provider: str, error_message: str) -> str:
 # GOOGLE OAUTH ROUTES
 # ================================
 
-@router.get("/auth/google/login")
+@router.get("/google/login")
 async def google_login(user_type: str = Query("individual")):
     """Initiate Google OAuth login - RETURNS JSON"""
     try:
@@ -311,7 +311,7 @@ async def google_login(user_type: str = Query("individual")):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Google OAuth login error: {str(e)}")
 
-@router.get("/auth/google/callback")
+@router.get("/google/callback")
 async def google_callback(
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
@@ -385,7 +385,7 @@ async def google_callback(
 # FACEBOOK OAUTH ROUTES
 # ================================
 
-@router.get("/auth/facebook/login")
+@router.get("/facebook/login")
 async def facebook_login(user_type: str = Query("individual")):
     """Initiate Facebook OAuth login - RETURNS JSON"""
     try:
@@ -410,7 +410,7 @@ async def facebook_login(user_type: str = Query("individual")):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Facebook OAuth login error: {str(e)}")
 
-@router.get("/auth/facebook/callback")
+@router.get("/facebook/callback")
 async def facebook_callback(
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
