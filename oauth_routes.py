@@ -311,96 +311,149 @@ async def google_login(user_type: str = Query("individual")):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Google OAuth login error: {str(e)}")
 
+# DEBUG VERSION - Add this to your oauth_routes.py google_callback function
+# Replace the existing google_callback function with this version
+
 @router.get("/google/callback")
 async def google_callback(
     code: Optional[str] = Query(None),
-    error: Optional[str] = Query(None),
-    state: Optional[str] = Query("individual")
+    state: Optional[str] = Query(None),
+    error: Optional[str] = Query(None)
 ):
-    """Handle Google OAuth callback with JWT token generation"""
+    """Handle Google OAuth callback with detailed debugging"""
+    
+    print(f"🔍 DEBUG: Google callback received")
+    print(f"🔍 DEBUG: code = {code[:20] if code else None}...")  # Show first 20 chars
+    print(f"🔍 DEBUG: state = {state}")
+    print(f"🔍 DEBUG: error = {error}")
+    
+    if error:
+        print(f"❌ DEBUG: OAuth error from Google: {error}")
+        return create_oauth_error_page("google", f"OAuth error: {error}")
+    
+    if not code:
+        print(f"❌ DEBUG: No authorization code received")
+        return create_oauth_error_page("google", "No authorization code received")
+    
     try:
-        if error:
-            return HTMLResponse(content=create_oauth_error_page("google", error))
+        # Debug environment variables
+        client_id = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        redirect_uri = os.getenv("GOOGLE_REDIRECT_URI")
         
-        if not code:
-            return HTMLResponse(content=create_oauth_error_page("google", "No authorization code"))
+        print(f"🔍 DEBUG: GOOGLE_CLIENT_ID = {client_id[:20] if client_id else None}...")
+        print(f"🔍 DEBUG: GOOGLE_CLIENT_SECRET = {'SET' if client_secret else 'NOT SET'}")
+        print(f"🔍 DEBUG: GOOGLE_REDIRECT_URI = {redirect_uri}")
         
-        # Exchange code for token
+        if not all([client_id, client_secret, redirect_uri]):
+            print(f"❌ DEBUG: Missing OAuth credentials")
+            return create_oauth_error_page("google", "Missing OAuth credentials")
+        
+        # Prepare token exchange request
         token_data = {
-            "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-            "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+            "client_id": client_id,
+            "client_secret": client_secret,
             "code": code,
             "grant_type": "authorization_code",
-            "redirect_uri": os.getenv("GOOGLE_REDIRECT_URI")
+            "redirect_uri": redirect_uri,
         }
         
-        async with httpx.AsyncClient() as client:
-            token_response = await client.post(
-                "https://oauth2.googleapis.com/token",
-                data=token_data,
-                timeout=30
-            )
+        print(f"🔍 DEBUG: Making token exchange request to Google")
         
-        if token_response.status_code != 200:
-            return HTMLResponse(content=create_oauth_error_page("google", "Token exchange failed"))
+        # Make token exchange request
+        response = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data=token_data,
+            headers={"Accept": "application/json"}
+        )
         
-        tokens = token_response.json()
-        access_token = tokens.get("access_token")
+        print(f"🔍 DEBUG: Token response status = {response.status_code}")
+        print(f"🔍 DEBUG: Token response headers = {dict(response.headers)}")
         
+        if response.status_code != 200:
+            print(f"❌ DEBUG: Token exchange failed with status {response.status_code}")
+            print(f"❌ DEBUG: Response text = {response.text}")
+            return create_oauth_error_page("google", f"Token exchange failed: {response.text}")
+        
+        token_json = response.json()
+        print(f"🔍 DEBUG: Token exchange successful")
+        print(f"🔍 DEBUG: Token keys = {list(token_json.keys())}")
+        
+        access_token = token_json.get("access_token")
         if not access_token:
-            return HTMLResponse(content=create_oauth_error_page("google", "No access token"))
+            print(f"❌ DEBUG: No access token in response")
+            return create_oauth_error_page("google", "No access token received")
         
         # Get user info
-        async with httpx.AsyncClient() as client:
-            user_response = await client.get(
-                f"https://www.googleapis.com/oauth2/v2/userinfo?access_token={access_token}",
-                timeout=30
-            )
+        print(f"🔍 DEBUG: Getting user info from Google")
+        user_response = requests.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        
+        print(f"🔍 DEBUG: User info status = {user_response.status_code}")
         
         if user_response.status_code != 200:
-            return HTMLResponse(content=create_oauth_error_page("google", "Failed to get user info"))
+            print(f"❌ DEBUG: Failed to get user info: {user_response.text}")
+            return create_oauth_error_page("google", "Failed to get user info")
         
         user_data = user_response.json()
-        
-        # Prepare user data for JWT
-        jwt_user_data = {
-            "id": user_data.get("id"),
-            "email": user_data.get("email"),
-            "name": user_data.get("name"),
-            "provider": "google",
-            "user_type": state,
-            "picture": user_data.get("picture")
-        }
+        print(f"🔍 DEBUG: User data keys = {list(user_data.keys())}")
         
         # Generate JWT token
-        jwt_token = generate_jwt_token(jwt_user_data)
+        jwt_token = generate_jwt_token(user_data)
+        print(f"🔍 DEBUG: JWT token generated successfully")
         
-        # Return success page with token
-        return HTMLResponse(content=create_oauth_success_page("google", jwt_token, jwt_user_data))
+        # Return success page
+        return create_oauth_success_page("google", jwt_token, user_data)
         
     except Exception as e:
-        return HTMLResponse(content=create_oauth_error_page("google", str(e)))
+        print(f"❌ DEBUG: Exception in google_callback: {str(e)}")
+        print(f"❌ DEBUG: Exception type: {type(e).__name__}")
+        import traceback
+        print(f"❌ DEBUG: Traceback: {traceback.format_exc()}")
+        return create_oauth_error_page("google", f"Internal error: {str(e)}")
 
 # ================================
 # FACEBOOK OAUTH ROUTES
 # ================================
 
+# ALSO ADD DEBUG TO FACEBOOK LOGIN ROUTE
 @router.get("/facebook/login")
 async def facebook_login(user_type: str = Query("individual")):
-    """Initiate Facebook OAuth login - RETURNS JSON"""
+    """Initiate Facebook OAuth login with debugging"""
+    
+    print(f"🔍 DEBUG: Facebook login initiated")
+    print(f"🔍 DEBUG: user_type = {user_type}")
+    
     try:
+        # Debug environment variables
+        app_id = os.getenv("FACEBOOK_APP_ID")
+        redirect_uri = os.getenv("FACEBOOK_REDIRECT_URI")
+        
+        print(f"🔍 DEBUG: FACEBOOK_APP_ID = {app_id[:20] if app_id else None}...")
+        print(f"🔍 DEBUG: FACEBOOK_REDIRECT_URI = {redirect_uri}")
+        
+        if not app_id or not redirect_uri:
+            print(f"❌ DEBUG: Missing Facebook OAuth configuration")
+            raise HTTPException(status_code=500, detail="Facebook OAuth not configured")
+        
         # Build Facebook OAuth authorization URL
         auth_params = {
-            "client_id": os.getenv("FACEBOOK_APP_ID"),
-            "redirect_uri": os.getenv("FACEBOOK_REDIRECT_URI"),
+            "client_id": app_id,
+            "redirect_uri": redirect_uri,
             "scope": "email,public_profile",
             "response_type": "code",
             "state": user_type
         }
         
-        auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?{urlencode(auth_params)}"
+        auth_url = f"https://www.facebook.com/v18.0/dialog/oauth?" + urlencode(auth_params)
         
-        # MAIN FIX: Return JSON instead of redirect
+        print(f"🔍 DEBUG: Facebook OAuth URL generated")
+        print(f"🔍 DEBUG: Auth URL = {auth_url[:100]}...")
+        print(f"🔍 DEBUG: Scope = {auth_params['scope']}")
+        
+        # Return JSON instead of redirect
         return {
             "auth_url": auth_url,
             "provider": "facebook",
@@ -408,75 +461,143 @@ async def facebook_login(user_type: str = Query("individual")):
         }
         
     except Exception as e:
+        print(f"❌ DEBUG: Exception in facebook_login: {str(e)}")
+        import traceback
+        print(f"❌ DEBUG: Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Facebook OAuth login error: {str(e)}")
+
+# DEBUG VERSION - Add this to your oauth_routes.py facebook_callback function
+# Replace the existing facebook_callback function with this version
 
 @router.get("/facebook/callback")
 async def facebook_callback(
     code: Optional[str] = Query(None),
+    state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
-    state: Optional[str] = Query("individual")
+    error_reason: Optional[str] = Query(None),
+    error_description: Optional[str] = Query(None)
 ):
-    """Handle Facebook OAuth callback with JWT token generation"""
+    """Handle Facebook OAuth callback with detailed debugging"""
+    
+    print(f"🔍 DEBUG: Facebook callback received")
+    print(f"🔍 DEBUG: code = {code[:20] if code else None}...")  # Show first 20 chars
+    print(f"🔍 DEBUG: state = {state}")
+    print(f"🔍 DEBUG: error = {error}")
+    print(f"🔍 DEBUG: error_reason = {error_reason}")
+    print(f"🔍 DEBUG: error_description = {error_description}")
+    
+    if error:
+        print(f"❌ DEBUG: Facebook OAuth error: {error} - {error_description}")
+        return create_oauth_error_page("facebook", f"OAuth error: {error} - {error_description}")
+    
+    if not code:
+        print(f"❌ DEBUG: No authorization code received from Facebook")
+        return create_oauth_error_page("facebook", "No authorization code received")
+    
     try:
-        if error:
-            return HTMLResponse(content=create_oauth_error_page("facebook", error))
+        # Debug environment variables
+        app_id = os.getenv("FACEBOOK_APP_ID")
+        app_secret = os.getenv("FACEBOOK_APP_SECRET")
+        redirect_uri = os.getenv("FACEBOOK_REDIRECT_URI")
         
-        if not code:
-            return HTMLResponse(content=create_oauth_error_page("facebook", "No authorization code"))
+        print(f"🔍 DEBUG: FACEBOOK_APP_ID = {app_id[:20] if app_id else None}...")
+        print(f"🔍 DEBUG: FACEBOOK_APP_SECRET = {'SET' if app_secret else 'NOT SET'}")
+        print(f"🔍 DEBUG: FACEBOOK_REDIRECT_URI = {redirect_uri}")
         
-        # Exchange code for token
+        if not all([app_id, app_secret, redirect_uri]):
+            print(f"❌ DEBUG: Missing Facebook OAuth credentials")
+            return create_oauth_error_page("facebook", "Missing Facebook OAuth credentials")
+        
+        # Step 1: Exchange code for access token
+        token_url = "https://graph.facebook.com/v18.0/oauth/access_token"
         token_params = {
-            "client_id": os.getenv("FACEBOOK_APP_ID"),
-            "client_secret": os.getenv("FACEBOOK_APP_SECRET"),
+            "client_id": app_id,
+            "client_secret": app_secret,
             "code": code,
-            "redirect_uri": os.getenv("FACEBOOK_REDIRECT_URI")
+            "redirect_uri": redirect_uri,
         }
         
-        async with httpx.AsyncClient() as client:
-            token_response = await client.get(
-                f"https://graph.facebook.com/v18.0/oauth/access_token?{urlencode(token_params)}",
-                timeout=30
-            )
+        print(f"🔍 DEBUG: Making token exchange request to Facebook")
+        print(f"🔍 DEBUG: Token URL = {token_url}")
+        print(f"🔍 DEBUG: Redirect URI = {redirect_uri}")
         
-        if token_response.status_code != 200:
-            return HTMLResponse(content=create_oauth_error_page("facebook", "Token exchange failed"))
+        # Make token exchange request
+        response = requests.get(token_url, params=token_params)
         
-        tokens = token_response.json()
-        access_token = tokens.get("access_token")
+        print(f"🔍 DEBUG: Token response status = {response.status_code}")
+        print(f"🔍 DEBUG: Token response headers = {dict(response.headers)}")
+        print(f"🔍 DEBUG: Token response text = {response.text[:200]}...")  # First 200 chars
         
+        if response.status_code != 200:
+            print(f"❌ DEBUG: Facebook token exchange failed with status {response.status_code}")
+            return create_oauth_error_page("facebook", f"Token exchange failed: {response.text}")
+        
+        # Parse token response
+        try:
+            token_data = response.json()
+            print(f"🔍 DEBUG: Token response is JSON")
+            print(f"🔍 DEBUG: Token keys = {list(token_data.keys())}")
+        except:
+            # Facebook sometimes returns URL-encoded response
+            from urllib.parse import parse_qs
+            token_data = parse_qs(response.text)
+            token_data = {k: v[0] if isinstance(v, list) and len(v) == 1 else v for k, v in token_data.items()}
+            print(f"🔍 DEBUG: Token response is URL-encoded")
+            print(f"🔍 DEBUG: Token keys = {list(token_data.keys())}")
+        
+        access_token = token_data.get("access_token")
         if not access_token:
-            return HTMLResponse(content=create_oauth_error_page("facebook", "No access token"))
+            print(f"❌ DEBUG: No access token in Facebook response")
+            print(f"❌ DEBUG: Full response = {token_data}")
+            return create_oauth_error_page("facebook", "No access token received from Facebook")
         
-        # Get user info
-        async with httpx.AsyncClient() as client:
-            user_response = await client.get(
-                f"https://graph.facebook.com/v18.0/me?fields=id,name,email,picture&access_token={access_token}",
-                timeout=30
-            )
+        print(f"🔍 DEBUG: Facebook access token received: {access_token[:20]}...")
+        
+        # Step 2: Get user info from Facebook
+        user_url = "https://graph.facebook.com/v18.0/me"
+        user_params = {
+            "access_token": access_token,
+            "fields": "id,name,email,picture.type(large)"
+        }
+        
+        print(f"🔍 DEBUG: Getting user info from Facebook")
+        print(f"🔍 DEBUG: User URL = {user_url}")
+        print(f"🔍 DEBUG: Requested fields = {user_params['fields']}")
+        
+        user_response = requests.get(user_url, params=user_params)
+        
+        print(f"🔍 DEBUG: User info status = {user_response.status_code}")
+        print(f"🔍 DEBUG: User info response = {user_response.text[:200]}...")
         
         if user_response.status_code != 200:
-            return HTMLResponse(content=create_oauth_error_page("facebook", "Failed to get user info"))
+            print(f"❌ DEBUG: Failed to get Facebook user info: {user_response.text}")
+            return create_oauth_error_page("facebook", f"Failed to get user info: {user_response.text}")
         
         user_data = user_response.json()
+        print(f"🔍 DEBUG: Facebook user data keys = {list(user_data.keys())}")
+        print(f"🔍 DEBUG: User ID = {user_data.get('id')}")
+        print(f"🔍 DEBUG: User name = {user_data.get('name')}")
+        print(f"🔍 DEBUG: User email = {user_data.get('email', 'NOT PROVIDED')}")
         
-        # Prepare user data for JWT
-        jwt_user_data = {
-            "id": user_data.get("id"),
-            "email": user_data.get("email"),
-            "name": user_data.get("name"),
-            "provider": "facebook",
-            "user_type": state,
-            "picture": user_data.get("picture", {}).get("data", {}).get("url") if user_data.get("picture") else None
-        }
+        # Check if email is provided
+        if not user_data.get('email'):
+            print(f"⚠️ DEBUG: Facebook user didn't provide email")
+            # You might want to handle this case differently
         
-        # Generate JWT token
-        jwt_token = generate_jwt_token(jwt_user_data)
+        # Step 3: Generate JWT token
+        print(f"🔍 DEBUG: Generating JWT token for Facebook user")
+        jwt_token = generate_jwt_token(user_data)
+        print(f"🔍 DEBUG: JWT token generated successfully")
         
-        # Return success page with token
-        return HTMLResponse(content=create_oauth_success_page("facebook", jwt_token, jwt_user_data))
+        # Return success page
+        return create_oauth_success_page("facebook", jwt_token, user_data)
         
     except Exception as e:
-        return HTMLResponse(content=create_oauth_error_page("facebook", str(e)))
+        print(f"❌ DEBUG: Exception in facebook_callback: {str(e)}")
+        print(f"❌ DEBUG: Exception type: {type(e).__name__}")
+        import traceback
+        print(f"❌ DEBUG: Traceback: {traceback.format_exc()}")
+        return create_oauth_error_page("facebook", f"Internal error: {str(e)}")
 
 # ================================
 # UTILITY ROUTES
